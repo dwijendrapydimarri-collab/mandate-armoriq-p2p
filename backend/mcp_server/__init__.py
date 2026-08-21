@@ -1,0 +1,1 @@
+"""MANDATE MCP Server Package"""

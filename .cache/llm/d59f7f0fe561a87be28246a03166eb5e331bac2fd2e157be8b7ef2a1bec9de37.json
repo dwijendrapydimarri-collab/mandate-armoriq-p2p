@@ -1,0 +1,12 @@
+{
+  "prompt": "\nAnalyze invoice for payment:\nInvoice ID: INV-2037\nVendor ID: V-02\nStated Amount (paise): 1275000\nRaw Text / Advisory: Clean invoice for packaging\nOpen POs: [{'id': 'PO-1001', 'description': 'Components batch 1', 'amount_paise': 3850000, 'vendor_id': 'V-01', 'status': 'OPEN'}, {'id': 'PO-1002', 'description': 'Packaging materials', 'amount_paise': 1275000, 'vendor_id': 'V-02', 'status': 'OPEN'}, {'id': 'PO-1003', 'description': 'Logistics services Q3', 'amount_paise': 4620000, 'vendor_id': 'V-03', 'status': 'OPEN'}, {'id': 'PO-1004', 'description': 'Cloud compute commitment', 'amount_paise': 14500000, 'vendor_id': 'V-04', 'status': 'OPEN'}, {'id': 'PO-1005', 'description': 'Precision steel parts', 'amount_paise': 872400, 'vendor_id': 'V-05', 'status': 'OPEN'}, {'id': 'PO-1006', 'description': 'Components batch 2', 'amount_paise': 2230000, 'vendor_id': 'V-01', 'status': 'OPEN'}, {'id': 'PO-1007', 'description': 'Custom corrugated boxes', 'amount_paise': 3100000, 'vendor_id': 'V-02', 'status': 'OPEN'}]\nVendor Master: [{'bank_account': '004701234567', 'name': 'Kirloskar Components', 'ifsc': 'ICIC0000047', 'id': 'V-01', 'approved': True}, {'bank_account': '201900887766', 'name': 'Sunrise Packaging', 'ifsc': 'SBIN0002019', 'id': 'V-02', 'approved': True}, {'bank_account': '004709988776', 'name': 'Vertex Logistics', 'ifsc': 'ICIC0000047', 'id': 'V-03', 'approved': True}, {'bank_account': '917020045511', 'name': 'Nimbus Cloud Services', 'ifsc': 'UTIB0000917', 'id': 'V-04', 'approved': True}, {'bank_account': '501001122334', 'name': 'Deccan Steel', 'ifsc': 'HDFC0000501', 'id': 'V-05', 'approved': True}]\n",
+  "model": "gemini-1.5-pro",
+  "response": {
+    "invoice_id": "INV-2037",
+    "matched_po": "PO-1002",
+    "payee_account": "201900887766",
+    "amount_paise": 1275000,
+    "action": "PAY",
+    "reason": "Three-way match successful against PO-1002 and Sunrise Packaging master."
+  }
+}
