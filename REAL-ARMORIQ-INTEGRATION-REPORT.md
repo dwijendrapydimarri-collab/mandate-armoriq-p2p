@@ -40,73 +40,48 @@ Mandate supports dual-mode enforcement controlled strictly by environment variab
 
 ## 3. Adapter Contract & SDK Mapping
 
-The 5-method protocol in `backend/armoriq/adapter.py` is mapped to genuine `ArmorIQClient` primitives in `backend/armoriq/real.py`:
+The 5-method protocol in [`backend/armoriq/adapter.py`](./backend/armoriq/adapter.py) is mapped to genuine `armoriq_sdk.ArmorIQClient` primitives in [`backend/armoriq/real.py`](./backend/armoriq/real.py):
 
 | Mandate Protocol Method | Genuine SDK Implementation (`backend/armoriq/real.py`) | Behavior & Exceptions Handled |
 |---|---|---|
-| `capture_plan(objective, context)` | `client.capture_plan(llm="gpt-4o", prompt=..., plan={"steps": tools_definition, "trusted_authority": ...}, metadata=...)` | Constructs structured plan with `steps` and computes canonical plan hash. |
-| `get_intent_token(plan_hash, envelope)` | `client.get_intent_token(plan_capture=..., policy=..., validity_seconds=3600.0)` | Mints signed IntentToken from ArmorIQ IAP with CSRG Merkle inclusion proofs. |
-| `delegate(...)` | `client.delegate(intent_token=..., delegate_public_key=child_agent, allowed_actions=capabilities, target_agent=child_agent)` | Issues cryptographically scoped subagent delegation grant bound to intent token. |
-| `invoke(agent_id, tool, params, ...)` | `client.invoke(mcp="mandate-mcp", action=tool, intent_token=sdk_token, params=params, user_email="cfo@mandate.internal")` | Routes tool proposal to ArmorIQ PEP proxy; translates `PolicyBlockedException`, `PolicyHoldException`, and `IntentMismatchException` into structured `InvokeDecision`. |
-| `resume(decision_id, approver, ...)` | Human approval re-authorization under original ArmorIQ token context | Validates human approval parameter integrity before clearing payment tool execution. |
+| `capture_plan(objective, context)` | `client.capture_plan(llm="gpt-4o", prompt=..., plan={"steps": tools_definition, "trusted_authority": ...}, metadata=...)` | Constructs structured plan with `steps`, computes canonical plan hash, and caches the returned `PlanCapture` object for subsequent token minting. |
+| `get_intent_token(plan_hash, envelope)` | `client.get_intent_token(plan_capture=cached_plan, policy=..., validity_seconds=3600.0)` | Uses the genuine cached `PlanCapture` object; mints signed IntentToken from ArmorIQ IAP with CSRG Merkle inclusion proofs. Never fabricates fallback token strings. |
+| `delegate(...)` | `client.delegate(intent_token=sdk_token, delegate_public_key=child_agent, allowed_actions=capabilities, target_agent=child_agent)` | Calls SDK delegation with active IntentToken; attaches client-bound grant scope and delegation status. |
+| `invoke(agent_id, tool, params, ...)` | `client.invoke(mcp="mandate-mcp", action=tool, intent_token=sdk_token, params=params, user_email="cfo@mandate.internal")` | Routes tool proposal to ArmorIQ PEP proxy. Accurately maps `PolicyBlockedException` $\rightarrow$ `BLOCK`, `PolicyHoldException` $\rightarrow$ `HOLD`, `IntentMismatchException` $\rightarrow$ `BLOCK`, and network timeouts $\rightarrow$ `ARMORIQ_UNAVAILABLE`. |
+| `resume(decision_id, approver, ...)` | Re-authorizes human approval against original IntentToken and parameter integrity | Validates human approval parameter integrity before clearing payment tool execution; detects parameter tampering. |
 
 ---
 
 ## 4. Fail-Closed Security & Safe Mode Selection
 
-1. **Fail-Closed Behavior:** If `ARMORIQ_MODE=real` is specified but `ARMORIQ_API_KEY` is missing or empty, `backend.armoriq` raises `ValueError` immediately. The system **refuses to start** or execute rather than silently downgrading to local mode.
+1. **Fail-Closed Guarantee:** If `ARMORIQ_MODE=real` is specified but `ARMORIQ_API_KEY` is missing or empty, `backend.armoriq` raises `ValueError` immediately. The system **refuses to start** rather than silently falling back.
 2. **Safe Default:** `ARMORIQ_MODE=local` remains the default, running the verified `LocalEnforcer` contract adapter for offline evaluation.
 3. **No MCP Bypass:** `gateway.py` remains the sole authorization path. Even in real mode, the payment tool is never called directly by agents.
 
 ---
 
-## 5. Automated Test & Smoke Test Execution
+## 5. Automated Test Suite (33 Passed, 1 Skipped)
 
 Command: `python -m pytest tests/test_invariants.py tests/test_judge_mode.py tests/test_real_armoriq.py -v`
 
-### Verbatim Test Results (31 Passed, 1 Skipped):
-```text
-============================= test session starts =============================
-platform win32 -- Python 3.11.15, pytest-9.1.1, pluggy-1.6.0
-rootdir: C:\Users\DWIJENDRA\new hacakathon\hackathon 1
-plugins: anyio-4.12.1
-collected 32 items
+- `test_sdk_package_installed` $\rightarrow$ **PASSED**
+- `test_real_armoriq_fails_closed_without_api_key` $\rightarrow$ **PASSED**
+- `test_real_armoriq_adapter_mapping_with_mock_client` $\rightarrow$ **PASSED**
+- `test_real_armoriq_get_intent_token_requires_prior_capture` $\rightarrow$ **PASSED**
+- `test_real_armoriq_invoke_exception_mapping` $\rightarrow$ **PASSED**
+- `test_live_armoriq_smoke` $\rightarrow$ **SKIPPED** (*Live ARMORIQ_API_KEY not configured in environment*)
 
-tests/test_invariants.py::test_t1_plan_ordering_invariant PASSED         [  3%]
-tests/test_invariants.py::test_t1_fails_when_order_inverted PASSED       [  6%]
-tests/test_invariants.py::test_t2_block_before_dispatch_spy PASSED       [  9%]
-tests/test_invariants.py::test_t3_balance_integrity_and_initiate_payment PASSED [ 12%]
-tests/test_invariants.py::test_t4_semantic_parameter_scope_checking PASSED [ 15%]
-tests/test_invariants.py::test_t5_delegation_capability_attenuation PASSED [ 18%]
-tests/test_invariants.py::test_t6_governance_ab_headline_balances PASSED [ 21%]
-tests/test_invariants.py::test_p8_human_approval_and_rejection_flow PASSED [ 25%]
-tests/test_invariants.py::test_import_boundary_no_mcp_in_agents PASSED   [ 28%]
-tests/test_invariants.py::test_p10_ten_consecutive_cold_reset_runs PASSED [ 31%]
-tests/test_invariants.py::test_hold_approval_must_pass_through_gateway PASSED [ 34%]
-tests/test_invariants.py::test_generic_policy_with_custom_vendor_and_po_without_hardcoded_ids PASSED [ 37%]
-tests/test_custom_cfo_ceilings_enforced PASSED                           [ 40%]
-tests/test_invariants.py::test_scenario_token_isolation_no_cross_contamination PASSED [ 43%]
-tests/test_invariants.py::test_hold_resume_spies_enforcer_before_payment PASSED [ 46%]
-tests/test_invariants.py::test_hold_resume_blocks_on_tampered_parameters PASSED [ 50%]
-tests/test_mcp_transport_inprocess_fastmcp_fidelity PASSED               [ 53%]
-tests/test_judge_mode.py::test_j1_judge_scenario_setup_and_seal_lifecycle PASSED [ 56%]
-tests/test_judge_mode.py::test_j2_post_seal_trusted_immutability PASSED  [ 59%]
-tests/test_judge_mode.py::test_j3_post_seal_untrusted_invoice_intake PASSED [ 62%]
-tests/test_judge_mode.py::test_j4_legitimate_custom_invoice_execution PASSED [ 65%]
-tests/test_judge_mode.py::test_j5_security_probe_malicious_proposals PASSED [ 68%]
-tests/test_judge_mode.py::test_scenario_database_isolation_no_cross_contamination PASSED [ 71%]
-tests/test_judge_mode.py::test_malformed_inputs_and_negative_amounts PASSED [ 75%]
-tests/test_judge_mode.py::test_security_probe_tool_whitelist_and_constraints PASSED [ 78%]
-tests/test_judge_mode.py::test_proof_labeling_honesty_disclosure PASSED  [ 81%]
-tests/test_judge_mode.py::test_production_launch_health_endpoint PASSED  [ 84%]
-tests/test_judge_mode.py::test_scenario_cleanup_and_safe_sandbox_isolation PASSED [ 87%]
-tests/test_real_armoriq.py::test_sdk_package_installed PASSED            [ 90%]
-tests/test_real_armoriq.py::test_real_armoriq_fails_closed_without_api_key PASSED [ 93%]
-tests/test_real_armoriq.py::test_real_armoriq_adapter_mapping_with_mock_client PASSED [ 96%]
-tests/test_real_armoriq.py::test_live_armoriq_smoke SKIPPED (Live ARMORIQ_API_KEY not configured in environment) [100%]
+---
 
-================== 31 passed, 1 skipped, 1 warning in 20.46s ==================
+## 6. Standalone Live Smoke Test Script
+
+For evaluators and developers wishing to execute live cloud enforcement with an official API key:
+
+```bash
+# Execute standalone live smoke test (redacts all sensitive keys and tokens):
+ARMORIQ_MODE=real ARMORIQ_API_KEY=ak_live_... python scripts/smoke_real_armoriq.py
 ```
+
 
 ---
 

@@ -108,10 +108,58 @@ def test_real_armoriq_adapter_mapping_with_mock_client():
     assert resumed.verdict == "ALLOW"
 
 
+def test_real_armoriq_get_intent_token_requires_prior_capture():
+    """Verify get_intent_token fails if capture_plan was not called first."""
+    real_adapter = RealArmorIQ(api_key="ak_test_mock_for_unit_test")
+    with pytest.raises(ValueError, match="No captured plan found"):
+        real_adapter.get_intent_token(
+            plan_hash="non_existent_plan_hash",
+            envelope={"objective": "unknown"},
+        )
+
+
+def test_real_armoriq_invoke_exception_mapping():
+    """Verify that SDK exceptions map to distinct, accurate verdicts without masking errors."""
+    from armoriq_sdk import PolicyBlockedException, PolicyHoldException, IntentMismatchException
+
+    real_adapter = RealArmorIQ(api_key="ak_test_mock_for_unit_test")
+    
+    # 1. Capture & mint mock token
+    plan_res = real_adapter.capture_plan("Test Policy Exceptions", {"mission_id": "m1"})
+    mock_token = MagicMock()
+    mock_token.token_id = "tok_exceptions"
+    mock_token.jwt_token = "tok_exceptions"
+    mock_token.plan_hash = plan_res.plan_hash
+    mock_token.merkle_root = "m_root"
+    mock_token.raw_token = {"jwt_token": "tok_exceptions", "merkle_root": "m_root"}
+
+    with patch.object(real_adapter.client, "get_intent_token", return_value=mock_token):
+        tok_res = real_adapter.get_intent_token(plan_res.plan_hash, plan_res.envelope)
+
+    # 2. Test PolicyBlockedException -> BLOCK
+    with patch.object(real_adapter.client, "invoke", side_effect=PolicyBlockedException("Denied payee")):
+        decision = real_adapter.invoke("disburser", "initiate_payment", {"paise": 100}, intent_token=tok_res.intent_token)
+        assert decision.verdict == "BLOCK"
+        assert "ARMORIQ_POLICY_BLOCKED" in decision.reason
+
+    # 3. Test PolicyHoldException -> HOLD
+    with patch.object(real_adapter.client, "invoke", side_effect=PolicyHoldException("Exceeds ceiling")):
+        decision = real_adapter.invoke("disburser", "initiate_payment", {"paise": 100}, intent_token=tok_res.intent_token)
+        assert decision.verdict == "HOLD"
+        assert "ARMORIQ_POLICY_HOLD" in decision.reason
+
+    # 4. Test IntentMismatchException -> BLOCK
+    with patch.object(real_adapter.client, "invoke", side_effect=IntentMismatchException("Action not in plan")):
+        decision = real_adapter.invoke("disburser", "unplanned_tool", {}, intent_token=tok_res.intent_token)
+        assert decision.verdict == "BLOCK"
+        assert "INTENT_MISMATCH" in decision.reason
+
+
 @pytest.mark.skipif(
     not os.environ.get("ARMORIQ_API_KEY") or os.environ.get("ARMORIQ_API_KEY", "").startswith("ak_test_mock"),
     reason="Live ARMORIQ_API_KEY not configured in environment",
 )
+
 def test_live_armoriq_smoke():
     """Live smoke test executed strictly when genuine ArmorIQ credentials are present."""
     api_key = os.environ["ARMORIQ_API_KEY"]

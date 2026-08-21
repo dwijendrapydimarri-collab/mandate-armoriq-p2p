@@ -6,6 +6,7 @@ intent token minting, capability delegation, and proxy-verified invocation.
 
 import os
 import json
+import hashlib
 import logging
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone
@@ -16,12 +17,14 @@ try:
         ArmorIQClient,
         PlanCapture,
         IntentToken,
+        DelegationResult,
         PolicyBlockedException,
         PolicyHoldException,
         IntentMismatchException,
         InvalidTokenException,
         MCPInvocationException,
     )
+    import httpx
     ARMORIQ_SDK_AVAILABLE = True
 except ImportError:
     ARMORIQ_SDK_AVAILABLE = False
@@ -59,7 +62,9 @@ class RealArmorIQ:
             client_kwargs["backend_endpoint"] = self.endpoint
 
         self.client = ArmorIQClient(**client_kwargs)
-        self._tokens: Dict[str, Any] = {}
+        self._captured_plans: Dict[str, PlanCapture] = {}
+        self._tokens: Dict[str, IntentToken] = {}
+        self._delegations: Dict[str, Any] = {}
 
     def capture_plan(self, objective: str, context: Dict[str, Any]) -> PlanResult:
         """Captures structured procurement execution plan via genuine ArmorIQ SDK."""
@@ -110,10 +115,11 @@ class RealArmorIQ:
             },
         )
 
-        plan_hash = getattr(plan_capture, "plan_hash", None) or getattr(plan_capture, "hash", None)
-        if not plan_hash:
-            import hashlib
-            plan_hash = hashlib.sha256(json.dumps(plan_payload, sort_keys=True).encode()).hexdigest()
+        plan_hash = hashlib.sha256(json.dumps(plan_payload, sort_keys=True).encode()).hexdigest()
+
+        # Cache the actual SDK PlanCapture object for subsequent token minting
+        self._captured_plans[plan_hash] = plan_capture
+        self._captured_plans[objective] = plan_capture
 
         return PlanResult(
             plan_hash=plan_hash,
@@ -123,23 +129,14 @@ class RealArmorIQ:
         )
 
     def get_intent_token(self, plan_hash: str, envelope: Dict[str, Any]) -> IntentTokenResult:
-        """Requests signed Intent Token with Merkle step proofs from ArmorIQ."""
-        tools_definition = [
-            {"tool": "fetch_invoices", "action": "fetch_invoices", "mcp": "mandate-mcp"},
-            {"tool": "initiate_payment", "action": "initiate_payment", "mcp": "mandate-mcp"},
-            {"tool": "write_ap_record", "action": "write_ap_record", "mcp": "mandate-mcp"},
-        ]
-        plan_payload = {
-            "objective": envelope.get("objective", "Procure-to-Pay Autonomous Processing"),
-            "steps": tools_definition,
-            "trusted_authority": envelope,
-        }
-        plan_capture = PlanCapture(
-            plan=plan_payload,
-            llm="gpt-4o",
-            prompt="Procure-to-Pay Autonomous Processing",
-            metadata={"plan_hash": plan_hash},
-        )
+        """Requests signed Intent Token with Merkle step proofs using the genuine cached PlanCapture."""
+        plan_capture = self._captured_plans.get(plan_hash) or self._captured_plans.get(envelope.get("objective", ""))
+        
+        if not plan_capture:
+            raise ValueError(
+                f"No captured plan found for plan_hash '{plan_hash}'. "
+                "Must call capture_plan() before requesting intent token."
+            )
 
         policy = {
             "spend_ceilings": envelope.get("spend_ceilings", {}),
@@ -153,6 +150,7 @@ class RealArmorIQ:
                 policy=policy,
                 validity_seconds=3600.0,
             )
+
             jwt_tok = getattr(sdk_token, "jwt_token", None)
             tok_id = getattr(sdk_token, "token_id", None)
             if isinstance(jwt_tok, str) and jwt_tok:
@@ -160,7 +158,7 @@ class RealArmorIQ:
             elif isinstance(tok_id, str) and tok_id:
                 token_str = tok_id
             else:
-                token_str = "token_real_" + plan_hash[:16]
+                raise InvalidTokenException("ArmorIQ SDK did not return a valid token string.")
 
             m_root = getattr(sdk_token, "merkle_root", None)
             if isinstance(m_root, str) and m_root:
@@ -173,7 +171,10 @@ class RealArmorIQ:
             else:
                 merkle_root = plan_hash[:32]
 
+            # Cache the actual SDK IntentToken for invoke and delegation operations
             self._tokens[token_str] = sdk_token
+            if tok_id and isinstance(tok_id, str):
+                self._tokens[tok_id] = sdk_token
 
             return IntentTokenResult(
                 intent_token=token_str,
@@ -182,9 +183,8 @@ class RealArmorIQ:
                 sealed_at=datetime.now(timezone.utc).isoformat(),
             )
         except Exception as e:
-            logger.error("ArmorIQ get_intent_token error: %s", e)
+            logger.error("ArmorIQ get_intent_token failed: %s", e)
             raise
-
 
     def delegate(
         self,
@@ -196,22 +196,26 @@ class RealArmorIQ:
         payee_scope: List[str],
         intent_token: str,
     ) -> DelegationGrant:
-        """Issues cryptographically bound delegation grant for subagents."""
+        """Issues cryptographically bound delegation grant for subagents under the active token."""
         import uuid
         grant_id = f"grant_{uuid.uuid4().hex[:12]}"
+        sdk_delegation_status = "CLIENT_BOUND_GRANT"
 
-        try:
-            sdk_token = self._tokens.get(intent_token)
-            if sdk_token and hasattr(self.client, "delegate"):
-                self.client.delegate(
+        sdk_token = self._tokens.get(intent_token)
+        if sdk_token and hasattr(self.client, "delegate"):
+            try:
+                res = self.client.delegate(
                     intent_token=sdk_token,
                     delegate_public_key=child_agent,
                     validity_seconds=3600,
                     allowed_actions=capabilities,
                     target_agent=child_agent,
                 )
-        except Exception as e:
-            logger.warning("ArmorIQ SDK delegation note: %s", e)
+                if isinstance(res, DelegationResult):
+                    sdk_delegation_status = "ARMORIQ_SDK_DELEGATED"
+                    self._delegations[grant_id] = res
+            except Exception as e:
+                logger.info("ArmorIQ SDK delegation call note (client-bound fallback): %s", e)
 
         return DelegationGrant(
             grant_id=grant_id,
@@ -221,7 +225,7 @@ class RealArmorIQ:
             capabilities=capabilities,
             ceiling_paise=ceiling_paise,
             payee_scope=payee_scope,
-            signature=f"armoriq_sig_{grant_id}",
+            signature=f"armoriq_{sdk_delegation_status.lower()}_{grant_id}",
         )
 
     def invoke(
@@ -233,6 +237,7 @@ class RealArmorIQ:
         intent_token: Optional[str] = None,
     ) -> InvokeDecision:
         """Evaluates whether an agent action is authorized via ArmorIQ SDK."""
+        # 1. Capability attenuation enforcement
         if grant and tool not in grant.capabilities:
             return InvokeDecision(
                 verdict="BLOCK",
@@ -241,63 +246,83 @@ class RealArmorIQ:
                 proof={"enforcer": "ARMORIQ_SDK", "grant_id": grant.grant_id, "verdict": "BLOCK"},
             )
 
-        sdk_token = self._tokens.get(intent_token)
+        sdk_token = self._tokens.get(intent_token) if intent_token else None
 
-        if sdk_token:
-            try:
-                res = self.client.invoke(
-                    mcp="mandate-mcp",
-                    action=tool,
-                    intent_token=sdk_token,
-                    params=params,
-                    user_email="cfo@mandate.internal",
-                )
-                return InvokeDecision(
-                    verdict="ALLOW",
-                    reason="ArmorIQ SDK verified action against sealed authority plan",
-                    proof={
-                        "enforcer": "ARMORIQ_SDK",
-                        "status": getattr(res, "status", "success"),
-                        "verified": getattr(res, "verified", True),
-                        "execution_time": getattr(res, "execution_time", 0.0),
-                    },
-                )
-            except PolicyBlockedException as e:
-                return InvokeDecision(
-                    verdict="BLOCK",
-                    reason=f"ARMORIQ_POLICY_BLOCKED: {getattr(e, 'reason', str(e))}",
-                    rule_matched="ARMORIQ_POLICY_BLOCK",
-                    proof={"enforcer": "ARMORIQ_SDK", "verdict": "BLOCK", "reason": str(e)},
-                )
-            except PolicyHoldException as e:
-                return InvokeDecision(
-                    verdict="HOLD",
-                    reason=f"ARMORIQ_POLICY_HOLD: Human review required - {str(e)}",
-                    rule_matched="ARMORIQ_POLICY_HOLD",
-                    proof={"enforcer": "ARMORIQ_SDK", "verdict": "HOLD", "reason": str(e)},
-                )
-            except IntentMismatchException as e:
+        if not sdk_token:
+            return InvokeDecision(
+                verdict="BLOCK",
+                reason="MISSING_INTENT_TOKEN: Cannot invoke without a valid active ArmorIQ IntentToken",
+                rule_matched="UNAUTHORIZED_PROPOSAL",
+                proof={"enforcer": "ARMORIQ_SDK", "verdict": "BLOCK"},
+            )
+
+        # 2. Invoke through SDK client proxy
+        try:
+            res = self.client.invoke(
+                mcp="mandate-mcp",
+                action=tool,
+                intent_token=sdk_token,
+                params=params,
+                user_email="cfo@mandate.internal",
+            )
+            
+            # Inspect SDK response
+            has_tool_error = bool(getattr(res, "status", "") == "error")
+            if has_tool_error:
                 return InvokeDecision(
                     verdict="BLOCK",
-                    reason=f"INTENT_MISMATCH: {str(e)}",
-                    rule_matched="UNPLANNED_ACTION_BLOCKED",
-                    proof={"enforcer": "ARMORIQ_SDK", "verdict": "BLOCK", "reason": str(e)},
-                )
-            except Exception as e:
-                logger.error("ArmorIQ SDK invocation error: %s", e)
-                return InvokeDecision(
-                    verdict="BLOCK",
-                    reason=f"ARMORIQ_ENFORCEMENT_ERROR: {str(e)}",
-                    rule_matched="SDK_INVOCATION_FAILED",
-                    proof={"enforcer": "ARMORIQ_SDK", "error": str(e)},
+                    reason=f"ARMORIQ_TOOL_ERROR: {getattr(res, 'result', 'Tool returned error status')}",
+                    rule_matched="TOOL_EXECUTION_ERROR",
+                    proof={"enforcer": "ARMORIQ_SDK", "status": "error"},
                 )
 
-        return InvokeDecision(
-            verdict="BLOCK",
-            reason="NO_ACTIVE_ARMORIQ_TOKEN: Cannot invoke without a valid ArmorIQ IntentToken",
-            rule_matched="MISSING_INTENT_TOKEN",
-            proof={"enforcer": "ARMORIQ_SDK", "verdict": "BLOCK"},
-        )
+            return InvokeDecision(
+                verdict="ALLOW",
+                reason="ArmorIQ SDK verified action against sealed authority plan",
+                proof={
+                    "enforcer": "ARMORIQ_SDK",
+                    "status": getattr(res, "status", "success"),
+                    "verified": getattr(res, "verified", True),
+                    "execution_time": getattr(res, "execution_time", 0.0),
+                },
+            )
+        except PolicyBlockedException as e:
+            return InvokeDecision(
+                verdict="BLOCK",
+                reason=f"ARMORIQ_POLICY_BLOCKED: {getattr(e, 'reason', str(e))}",
+                rule_matched="ARMORIQ_POLICY_BLOCK",
+                proof={"enforcer": "ARMORIQ_SDK", "verdict": "BLOCK", "reason": str(e)},
+            )
+        except PolicyHoldException as e:
+            return InvokeDecision(
+                verdict="HOLD",
+                reason=f"ARMORIQ_POLICY_HOLD: Human review required - {str(e)}",
+                rule_matched="ARMORIQ_POLICY_HOLD",
+                proof={"enforcer": "ARMORIQ_SDK", "verdict": "HOLD", "reason": str(e)},
+            )
+        except IntentMismatchException as e:
+            return InvokeDecision(
+                verdict="BLOCK",
+                reason=f"INTENT_MISMATCH: {str(e)}",
+                rule_matched="UNPLANNED_ACTION_BLOCKED",
+                proof={"enforcer": "ARMORIQ_SDK", "verdict": "BLOCK", "reason": str(e)},
+            )
+        except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError) as e:
+            logger.error("ArmorIQ connectivity error: %s", e)
+            return InvokeDecision(
+                verdict="BLOCK",
+                reason=f"ARMORIQ_UNAVAILABLE: Failed to reach ArmorIQ proxy/IAP endpoint ({str(e)})",
+                rule_matched="ARMORIQ_SERVICE_UNAVAILABLE",
+                proof={"enforcer": "ARMORIQ_SDK", "error": "ARMORIQ_UNAVAILABLE", "detail": str(e)},
+            )
+        except Exception as e:
+            logger.error("ArmorIQ SDK invocation error: %s", e)
+            return InvokeDecision(
+                verdict="BLOCK",
+                reason=f"ARMORIQ_ENFORCEMENT_ERROR: {str(e)}",
+                rule_matched="SDK_INVOCATION_FAILED",
+                proof={"enforcer": "ARMORIQ_SDK", "error": str(e)},
+            )
 
     def resume(
         self,
