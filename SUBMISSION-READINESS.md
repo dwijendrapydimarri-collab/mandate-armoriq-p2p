@@ -14,14 +14,16 @@
 
 All submission files are saved in the project repository with measured sizes complying with hackathon limits:
 
-| Submission Deliverable | Filepath in Repository | Format | Measured File Size | Portal Limit | Status |
+| Submission Deliverable | Filepath / URL | Format | Measured File Size / Details | Portal Limit | Status |
 |---|---|---|---|---|---|
+| **Public GitHub Repository** | [`https://github.com/dwijendrapydimarri-collab/mandate-armoriq-p2p`](https://github.com/dwijendrapydimarri-collab/mandate-armoriq-p2p) | Git Remote (Public) | Clean master branch synced | Public Link | **LIVE & VERIFIED** |
+| **Explanatory Demo Video** | [`recordings/mandate_demo_recording.mp4`](./recordings/mandate_demo_recording.mp4) | MP4 (H.264 + AAC Audio) | **2.29 MB** (30.9s narration) | < 100 MB | **PORTABLE & VERIFIED** |
 | **Official 7-Slide Presentation** | [`MANDATE-ROUND2-PRESENTATION.pdf`](./MANDATE-ROUND2-PRESENTATION.pdf) | PDF (7 slides) | **11.34 KB (0.01 MB)** | < 10 MB | **VERIFIED & COMPLIANT** |
-| **Demo Recording (Universal)** | [`recordings/mandate_demo_recording.mp4`](./recordings/mandate_demo_recording.mp4) | MP4 (H.264 / yuv420p) | **1.64 MB** | < 100 MB | **PORTABLE & COMPLIANT** |
-| **Demo Recording (Raw WebP)** | [`recordings/mandate_browser_rehearsal.webp`](./recordings/mandate_browser_rehearsal.webp) | Animated WebP | **5.10 MB** | < 100 MB | **BACKUP PRESERVED** |
+| **Raw Browser Rehearsal Backup** | [`recordings/mandate_browser_rehearsal.webp`](./recordings/mandate_browser_rehearsal.webp) | Animated WebP | **5.10 MB** | < 100 MB | **BACKUP PRESERVED** |
+| **Narration Subtitles** | [`recordings/subtitles.srt`](./recordings/subtitles.srt) | SRT Text | **635 bytes** | N/A | **VERIFIED** |
 | **Slide Script & Differentiation** | [`SEVEN-SLIDE-ANSWERS-AND-DIFFERENTIATION.md`](./SEVEN-SLIDE-ANSWERS-AND-DIFFERENTIATION.md) | Markdown | **15.85 KB** | N/A | **VERIFIED** |
-| **System Status Report** | [`IMPLEMENTATION-STATUS.md`](./IMPLEMENTATION-STATUS.md) | Markdown | **6.87 KB** | N/A | **VERIFIED** |
 | **Product Specification (Contract)**| [`SPEC.md`](./SPEC.md) | Markdown | **37.64 KB** | N/A | **AUTHORITATIVE TRUTH** |
+
 
 ---
 
