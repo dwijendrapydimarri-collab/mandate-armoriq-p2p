@@ -12,6 +12,7 @@ import { InvoiceIntakeModal } from './components/InvoiceIntakeModal';
 import { JudgeChallengeConsole } from './components/JudgeChallengeConsole';
 import { TrustBoundaryMap } from './components/TrustBoundaryMap';
 import { AuthorityCliffReplay } from './components/AuthorityCliffReplay';
+import { SubmissionTrackerModal } from './components/SubmissionTrackerModal';
 
 export const App: React.FC = () => {
   const [activeScenarioId, setActiveScenarioId] = useState<string>('canonical');
@@ -36,7 +37,9 @@ export const App: React.FC = () => {
   const [isCfoSetupOpen, setIsCfoSetupOpen] = useState(false);
   const [isInvoiceIntakeOpen, setIsInvoiceIntakeOpen] = useState(false);
   const [isProbeConsoleOpen, setIsProbeConsoleOpen] = useState(false);
+  const [isTrackerOpen, setIsTrackerOpen] = useState(false);
   const [showEnvelopeDetail, setShowEnvelopeDetail] = useState(false);
+
 
   const fetchState = async (scenId: string = activeScenarioId) => {
     try {
@@ -205,6 +208,7 @@ export const App: React.FC = () => {
         onOpenCfoSetup={() => setIsCfoSetupOpen(true)}
         onOpenInvoiceIntake={() => setIsInvoiceIntakeOpen(true)}
         onOpenProbeConsole={() => setIsProbeConsoleOpen(true)}
+        onOpenTracker={() => setIsTrackerOpen(true)}
         onReset={handleReset}
       />
 
@@ -329,9 +333,15 @@ export const App: React.FC = () => {
         purchaseOrders={state.purchase_orders}
         onProbeExecuted={() => fetchState(activeScenarioId)}
       />
+
+      <SubmissionTrackerModal
+        isOpen={isTrackerOpen}
+        onClose={() => setIsTrackerOpen(false)}
+      />
     </div>
   );
 };
 
 export default App;
+
 

@@ -1,0 +1,19 @@
+1
+00:00:00,500 --> 00:00:06,000
+Mandate is an autonomous procure-to-pay system governed by a sealed Authority Envelope.
+
+2
+00:00:06,200 --> 00:00:11,500
+The CFO fixes approved payees and spending limits before the invoice is read.
+
+3
+00:00:11,700 --> 00:00:17,200
+ArmorIQ authorizes delegated agent actions through the sole gateway.
+
+4
+00:00:17,400 --> 00:00:24,000
+When an invoice proposes an unauthorized payee, the request is blocked before the payment tool runs, and the ledger remains unchanged.
+
+5
+00:00:24,200 --> 00:00:30,500
+This prototype uses the local ArmorIQ contract adapter, clearly disclosed in the interface.

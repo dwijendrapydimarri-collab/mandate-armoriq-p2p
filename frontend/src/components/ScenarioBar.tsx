@@ -10,6 +10,7 @@ interface ScenarioBarProps {
   onOpenCfoSetup: () => void;
   onOpenInvoiceIntake: () => void;
   onOpenProbeConsole: () => void;
+  onOpenTracker: () => void;
   onReset: () => void;
 }
 
@@ -22,6 +23,7 @@ export const ScenarioBar: React.FC<ScenarioBarProps> = ({
   onOpenCfoSetup,
   onOpenInvoiceIntake,
   onOpenProbeConsole,
+  onOpenTracker,
   onReset,
 }) => {
   const isCanonical = scenarioId === 'canonical' || !metadata;
@@ -117,7 +119,18 @@ export const ScenarioBar: React.FC<ScenarioBarProps> = ({
           </svg>
           Security Probe Console
         </button>
+
+        <button
+          onClick={onOpenTracker}
+          disabled={isRunning}
+          className="px-3 py-1 bg-emerald-600/30 hover:bg-emerald-600/50 text-emerald-200 border border-emerald-500/40 rounded text-xs font-semibold transition flex items-center gap-1.5 shadow-sm"
+          title="Inspect live submission blockers and verification proof"
+        >
+          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+          Submission Tracker
+        </button>
       </div>
+
 
       {/* Right: Sandbox Controls */}
       <div className="flex items-center gap-2">
