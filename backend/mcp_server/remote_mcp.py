@@ -456,15 +456,83 @@ async def agent_invoke(request):
     )
 
 
+async def openapi_schema(request):
+    """Standard OpenAPI 3.0 descriptor for agent registration discovery."""
+    schema = {
+        "openapi": "3.0.0",
+        "info": {
+            "title": "MANDATE Agent Service & MCP Bridge",
+            "version": "1.0.0",
+            "description": "ArmorIQ Bounded Autonomous Procure-to-Pay Agent Service",
+        },
+        "paths": {
+            "/agents/controller/identity": {
+                "get": {
+                    "summary": "Mandate Controller Identity",
+                    "security": [{"ApiKeyAuth": []}, {"BearerAuth": []}],
+                    "responses": {"200": {"description": "Authenticated Agent Identity"}},
+                }
+            },
+            "/agents/matcher/identity": {
+                "get": {
+                    "summary": "Mandate Matcher Identity",
+                    "security": [{"ApiKeyAuth": []}, {"BearerAuth": []}],
+                    "responses": {"200": {"description": "Authenticated Agent Identity"}},
+                }
+            },
+            "/agents/disburser/identity": {
+                "get": {
+                    "summary": "Mandate Disburser Identity",
+                    "security": [{"ApiKeyAuth": []}, {"BearerAuth": []}],
+                    "responses": {"200": {"description": "Authenticated Agent Identity"}},
+                }
+            },
+            "/mcp": {
+                "post": {
+                    "summary": "Model Context Protocol JSON-RPC Endpoint",
+                    "responses": {"200": {"description": "MCP JSON-RPC response"}},
+                }
+            },
+        },
+        "components": {
+            "securitySchemes": {
+                "ApiKeyAuth": {"type": "apiKey", "in": "header", "name": "X-API-Key"},
+                "BearerAuth": {"type": "http", "scheme": "bearer"},
+            }
+        },
+    }
+    return JSONResponse(schema)
+
+
+async def openapi_info(request):
+    """Basic service info descriptor."""
+    return JSONResponse({
+        "service": "mandate-agent-service",
+        "version": "1.0.0",
+        "status": "healthy",
+        "agents": ["mandate-controller", "mandate-matcher", "mandate-disburser"],
+        "mcp_server": "mandate-mcp",
+    })
+
+
 routes = [
     Route("/health", health_check, methods=["GET", "HEAD"]),
+    Route("/status", health_check, methods=["GET", "HEAD"]),
     Route("/", health_check, methods=["GET", "HEAD"]),
+    Route("/info", openapi_info, methods=["GET", "HEAD"]),
+    Route("/version", openapi_info, methods=["GET", "HEAD"]),
+    Route("/openapi.json", openapi_schema, methods=["GET", "HEAD"]),
+    Route("/swagger.json", openapi_schema, methods=["GET", "HEAD"]),
+    Route("/api/openapi.json", openapi_schema, methods=["GET", "HEAD"]),
+    Route("/docs/openapi.json", openapi_schema, methods=["GET", "HEAD"]),
+    Route("/v1/openapi.json", openapi_schema, methods=["GET", "HEAD"]),
     Route("/mcp", handle_http_mcp, methods=["POST"]),
-    Route("/", handle_http_mcp, methods=["POST"]),
     Route("/sse", sse_endpoint, methods=["GET"]),
     Route("/messages", sse_messages, methods=["POST"]),
-    # Dedicated Agent Endpoints
+    # Dedicated Agent Endpoints (supports base slug, trailing slash, and /identity)
     Route("/agents", list_agents, methods=["GET", "HEAD"]),
+    Route("/agents/{agent_slug}", agent_identity, methods=["GET", "HEAD"]),
+    Route("/agents/{agent_slug}/", agent_identity, methods=["GET", "HEAD"]),
     Route("/agents/{agent_slug}/health", agent_health, methods=["GET", "HEAD"]),
     Route("/agents/{agent_slug}/identity", agent_identity, methods=["GET", "HEAD"]),
     Route("/agents/{agent_slug}/invoke", agent_invoke, methods=["POST"]),
