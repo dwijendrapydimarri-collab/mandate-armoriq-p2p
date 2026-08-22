@@ -7,9 +7,13 @@
 **Public Repository:** [https://github.com/dwijendrapydimarri-collab/mandate-armoriq-p2p](https://github.com/dwijendrapydimarri-collab/mandate-armoriq-p2p)  
 **Official Presentation:** [`MANDATE-ROUND2-PRESENTATION.pdf`](./MANDATE-ROUND2-PRESENTATION.pdf)  
 **Demo Video:** [`recordings/mandate_demo_recording.mp4`](./recordings/mandate_demo_recording.mp4) (H.264 Video + AAC Voiceover Narration)  
+**Detailed Integration Audit:** [`REAL-ARMORIQ-INTEGRATION-REPORT.md`](./REAL-ARMORIQ-INTEGRATION-REPORT.md)  
 
 > **Core Invariant:**  
 > *"Authority is fixed at plan time over trusted data before reading any untrusted input."*
+> 
+> **Verified ArmorIQ Boundary:**  
+> *"Core ArmorIQ plan capture, intent-token issuance, remote MCP invocation, and out-of-plan blocking are live verified. Mandate also implements local capability attenuation and fail-closed HOLD/resume behavior; cloud subtree delegation and approval-session resume remain pending workspace support."*
 
 ---
 
@@ -21,13 +25,18 @@ Autonomous accounts-payable agents process thousands of supplier invoices contai
 
 ## 2. Solution Overview
 
-**Mandate** solves this by establishing a cryptographic **Authority Envelope** at plan time. In **Phase 1 (Trusted Setup)**, the CFO defines approved vendors, bank account IFSC codes, open Purchase Orders (POs), and spend ceilings over trusted ERP databases before any invoice is read. ArmorIQ captures this plan, computes a cryptographic digest of trusted facts, and mints an immutable **Intent Token**. In **Phase 2 (Untrusted Intake)**, incoming invoices and free-text remarks are ingested strictly after the mission is sealed. Every tool execution passes through a unified `gateway.py` policy boundary that authorizes parameters against the sealed envelope via ArmorIQ. Any proposal targeting an unapproved payee, an over-PO amount, or an undelegated capability is **blocked before the MCP payment tool runs**, preserving the ledger and company balances.
+**Mandate** solves this by establishing a cryptographic **Authority Envelope** at plan time. 
+
+- **Phase 1 (Trusted Setup):** The CFO defines approved vendors, bank account IFSC codes, open Purchase Orders (POs), and spend ceilings over trusted ERP databases before any invoice is read. ArmorIQ captures this plan, computes a cryptographic digest of trusted facts, and mints an immutable **Intent Token**.
+- **Phase 2 (Untrusted Intake):** Incoming invoices and free-text remarks are ingested strictly after the mission is sealed. Every tool execution passes through a unified `gateway.py` policy boundary that checks capability grants and authorizes parameters against the sealed envelope via ArmorIQ. 
+
+Any proposal targeting an unapproved payee, an over-PO amount, or an out-of-plan action is **blocked before the MCP payment tool runs**, preserving the ledger and company balances.
 
 ---
 
-## 3. Architecture & Subagent Delegation
+## 3. Architecture & Subagent Capability Attenuation
 
-Mandate enforces cryptographic capability attenuation across three specialized subagents:
+Mandate enforces specialized role separation across three subagents, mediated by the unified gateway:
 
 ```
                   ┌───────────────────────────────┐
@@ -46,7 +55,7 @@ Mandate enforces cryptographic capability attenuation across three specialized s
                  ▼                               ▼
        ┌───────────────────┐           ┌───────────────────┐
        │   Matcher Agent   │           │  Disburser Agent  │
-       │ Capability:       │           │ Capability:       │
+       │ Scoped Grant:     │           │ Scoped Grant:     │
        │ `fetch_invoices`  │           │ `initiate_payment`│
        └─────────┬─────────┘           └─────────┬─────────┘
                  │                               │
@@ -55,7 +64,7 @@ Mandate enforces cryptographic capability attenuation across three specialized s
                                  ▼
                    ┌───────────────────────────┐
                    │        gateway.py         │ ◄── Sole Authorization Boundary
-                   │   (ArmorIQ Adapter Check) │
+                   │   (Capability & ArmorIQ)  │
                    └─────────────┬─────────────┘
                                  │
                  ┌───────────────┴───────────────┐
@@ -68,13 +77,26 @@ Mandate enforces cryptographic capability attenuation across three specialized s
 ```
 
 1. **Controller Agent:** Owns the root mission, creates scoped delegation grants, and orchestrates the procurement pipeline.
-2. **Matcher Agent:** Receives capability strictly for `fetch_invoices` and `verify_match`. Direct payment attempts are blocked with `CAPABILITY_NOT_DELEGATED`.
-3. **Disburser Agent:** Receives capability for `initiate_payment` strictly scoped to approved payee accounts and PO limits.
-4. **Sole Gateway (`gateway.py`):** Intercepts every proposal and checks ArmorIQ before dispatching to the FastMCP tool server.
+2. **Matcher Agent:** Receives a grant scoped to `fetch_invoices` and `verify_match`. Direct payment attempts are blocked at the gateway with `LOCAL_CAPABILITY_ATTENUATION: Agent 'matcher' does not possess capability 'initiate_payment'`.
+3. **Disburser Agent:** Receives a grant for `initiate_payment` scoped to approved payee accounts and PO limits.
+4. **Sole Gateway (`gateway.py`):** Intercepts every proposal, validates capability bounds, and verifies plan authority against ArmorIQ before dispatching to the MCP tool server.
 
 ---
 
-## 4. Key Visual & Proving Ground Features
+## 4. Truthful ArmorIQ Capability Matrix
+
+| Capability Surface | Status | Exact Live Evidence & Behavior |
+|---|---|---|
+| **Plan Capture (`capture_plan`)** | **`VERIFIED`** | Structured plan with `steps` schema captured via `ArmorIQClient`; canonical plan hash computed and cached. |
+| **Token Issuance (`get_intent_token`)** | **`VERIFIED`** | Signed `IntentToken` minted from ArmorIQ IAP (`/iap/sdk/token`) with Merkle root and step proofs. |
+| **Remote MCP Dispatch (`fetch_invoices`)** | **`VERIFIED`** | Forwarded to registered HTTPS `mandate-mcp` endpoint via ArmorIQ PEP proxy; returned genuine **`ALLOW`**. |
+| **Out-of-Plan Interception (`unplanned_tool`)** | **`VERIFIED`** | Intercepted before MCP dispatch; returned genuine **`BLOCK`** (`INTENT_MISMATCH: Action not found in plan`). |
+| **Subagent Delegation (Problem 2)** | **`PARTIALLY VERIFIED`** | Client gateway enforces local capability attenuation; cloud subtree delegation remains pending workspace activation. |
+| **HOLD / Resume Approval (Problem 1)** | **`PARTIALLY VERIFIED`** | Local parameter integrity verified; fails closed (`ARMORIQ_RESUME_UNSUPPORTED`) in real mode when cloud approval queue is unavailable. |
+
+---
+
+## 5. Key Visual & Proving Ground Features
 
 - **Sealed Authority Envelope:** Cryptographic container displaying sealed mission hashes, CFO spend ceilings, and active delegations.
 - **Judge Challenge Mode:** Live interactive sandbox where evaluators create custom procurement missions, seal authorities, ingest untrusted invoices, and execute custom security probes with zero CLI commands.
@@ -85,7 +107,7 @@ Mandate enforces cryptographic capability attenuation across three specialized s
 
 ---
 
-## 5. Quickstart & Launch Instructions
+## 6. Quickstart & Launch Instructions
 
 ### Option A: Single-Command Production Server (Unified UI + API)
 ```bash
@@ -115,53 +137,24 @@ npm run dev -- --host 0.0.0.0 --port 5173
 
 ---
 
-## 6. Automated Invariant & Security Verification
+## 7. Automated Test Suite (33 Passed, 1 Skipped)
 
-Mandate includes 28 automated tests covering core security invariants and Judge Mode lifecycles.
+Mandate includes 34 test cases covering security invariants, Judge Mode sandbox isolation, and real SDK adapter contracts:
 
 ```bash
-# Run entire test suite from repository root:
-python -m pytest tests/test_invariants.py tests/test_judge_mode.py -v
+# Run entire automated test suite from repository root:
+python -m pytest tests/test_invariants.py tests/test_judge_mode.py tests/test_real_armoriq.py -v
 ```
 
-### Verified Test Results (28/28 Passing):
-```text
-tests/test_invariants.py::test_t1_plan_ordering_invariant PASSED         [  3%]
-tests/test_invariants.py::test_t1_fails_when_order_inverted PASSED       [  7%]
-tests/test_invariants.py::test_t2_block_before_dispatch_spy PASSED       [ 10%]
-tests/test_invariants.py::test_t3_balance_integrity_and_initiate_payment PASSED [ 14%]
-tests/test_invariants.py::test_t4_semantic_parameter_scope_checking PASSED [ 17%]
-tests/test_invariants.py::test_t5_delegation_capability_attenuation PASSED [ 21%]
-tests/test_invariants.py::test_t6_governance_ab_headline_balances PASSED [ 25%]
-tests/test_invariants.py::test_p8_human_approval_and_rejection_flow PASSED [ 28%]
-tests/test_invariants.py::test_import_boundary_no_mcp_in_agents PASSED   [ 32%]
-tests/test_invariants.py::test_p10_ten_consecutive_cold_reset_runs PASSED [ 35%]
-tests/test_invariants.py::test_hold_approval_must_pass_through_gateway PASSED [ 39%]
-tests/test_invariants.py::test_generic_policy_with_custom_vendor_and_po_without_hardcoded_ids PASSED [ 42%]
-tests/test_custom_cfo_ceilings_enforced PASSED                           [ 46%]
-tests/test_invariants.py::test_scenario_token_isolation_no_cross_contamination PASSED [ 50%]
-tests/test_invariants.py::test_hold_resume_spies_enforcer_before_payment PASSED [ 53%]
-tests/test_invariants.py::test_hold_resume_blocks_on_tampered_parameters PASSED [ 57%]
-tests/test_mcp_transport_inprocess_fastmcp_fidelity PASSED               [ 60%]
-tests/test_judge_mode.py::test_j1_judge_scenario_setup_and_seal_lifecycle PASSED [ 64%]
-tests/test_judge_mode.py::test_j2_post_seal_trusted_immutability PASSED  [ 67%]
-tests/test_judge_mode.py::test_j3_post_seal_untrusted_invoice_intake PASSED [ 71%]
-tests/test_judge_mode.py::test_j4_legitimate_custom_invoice_execution PASSED [ 75%]
-tests/test_judge_mode.py::test_j5_security_probe_malicious_proposals PASSED [ 78%]
-tests/test_judge_mode.py::test_scenario_database_isolation_no_cross_contamination PASSED [ 82%]
-tests/test_judge_mode.py::test_malformed_inputs_and_negative_amounts PASSED [ 85%]
-tests/test_judge_mode.py::test_security_probe_tool_whitelist_and_constraints PASSED [ 89%]
-tests/test_judge_mode.py::test_proof_labeling_honesty_disclosure PASSED  [ 92%]
-tests/test_judge_mode.py::test_production_launch_health_endpoint PASSED  [ 96%]
-tests/test_judge_mode.py::test_scenario_cleanup_and_safe_sandbox_isolation PASSED [100%]
-
-======================= 28 passed, 1 warning in 20.08s ========================
-```
+### Verified Test Results:
+- `tests/test_invariants.py` $\rightarrow$ **17 passed** (Plan ordering, dispatch spy, balance integrity, semantic parameter scope, delegation attenuation, governance A/B headline balances, human approval/rejection, cold reset reproducibility).
+- `tests/test_judge_mode.py` $\rightarrow$ **11 passed** (Judge setup/seal lifecycle, post-seal immutability, untrusted intake, legitimate execution, security probe blocking, DB isolation, malformed input rejection).
+- `tests/test_real_armoriq.py` $\rightarrow$ **5 passed, 1 skipped** (SDK installation, fail-closed key validation, mock adapter mapping, prior capture requirement, typed exception mapping; `test_live_armoriq_smoke` skipped in CI without live API key).
 
 ---
 
-## 7. Honest Technical Disclosures
+## 8. Honest Technical Disclosures
 
-1. **ArmorIQ Enforcement Mode:** In local development without live cloud SDK credentials, Mandate executes using `ARMORIQ_MODE=local` (`LocalEnforcer`), which implements 100% generic policy matching the 5-method protocol in `backend/armoriq/adapter.py`. The UI and API explicitly display `ENFORCEMENT: LOCAL ADAPTER (ArmorIQ contract)`.
-2. **Deterministic Response Cache:** Replay fixtures are cached in `.cache/llm/` for 100% deterministic offline evaluation.
+1. **Dual Enforcement Modes:** Mandate supports both `ARMORIQ_MODE=local` (`LocalEnforcer`) for offline evaluation and `ARMORIQ_MODE=real` (`RealArmorIQ`) using `armoriq-sdk` 0.6.10. When `ARMORIQ_MODE=real` is specified without an API key, the system fails closed and refuses to start rather than silently downgrading.
+2. **Deterministic Offline Cache:** Replay fixtures are cached in `.cache/llm/` for 100% deterministic offline evaluation without external network dependencies.
 3. **Secret Hygiene:** 0 API keys, 0 private signing keys, and 0 personal credentials are committed to the repository or exposed in the frontend bundle.
