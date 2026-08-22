@@ -1,27 +1,28 @@
 """
-MANDATE — Live ArmorIQ Advanced Enforcement Audit
-Tests:
-1. Plan Capture & Intent Token Minting
-2. Remote MCP tool invocation (fetch_invoices -> ALLOW) via registered proxy endpoint
-3. Out-of-plan action rejection (unplanned_tool -> BLOCK)
-4. Subagent Delegation (client.delegate -> delegated token -> scoped invocation -> out-of-scope BLOCK)
-5. Hold & Resume approval flow with parameter integrity verification
+MANDATE — Live ArmorIQ Advanced Enforcement Audit Script
+Performs a rigorous, truthful audit of live ArmorIQ cloud enforcement:
+1. Plan Capture & Intent Token Issuance (Core)
+2. Remote MCP Tool Invocation via Registered Proxy (fetch_invoices -> ALLOW) (Core)
+3. Out-of-Plan Proposal Interception (unplanned_tool -> BLOCK) (Core)
+4. Subagent Delegation Status Inspection (Problem 2)
+5. HOLD / Resume Approval Session Inspection (Problem 1)
+
+Exit Codes:
+- 0: Core ArmorIQ Verified (with explicit capability status for delegation/resume)
+- 1: Core ArmorIQ Failure (planned action denied or unplanned action allowed)
 """
 
 import os
 import sys
 import json
-from datetime import datetime, timezone
 
 try:
     import armoriq_sdk
-    from armoriq_sdk import ArmorIQClient, IntentToken, DelegationResult
 except ImportError:
     print("[ERROR] armoriq-sdk is not installed.")
     sys.exit(1)
 
 from backend.armoriq.real import RealArmorIQ
-from backend.armoriq.adapter import DelegationGrant
 
 
 def run_advanced_audit():
@@ -31,7 +32,7 @@ def run_advanced_audit():
         sys.exit(0)
 
     print("=" * 75)
-    print("MANDATE — LIVE REAL ARMORIQ SDK ADVANCED ENFORCEMENT AUDIT")
+    print("MANDATE — LIVE REAL ARMORIQ SDK ENFORCEMENT & CAPABILITY AUDIT")
     print("=" * 75)
     print(f"SDK Version        : {getattr(armoriq_sdk, '__version__', 'unknown')}")
     print(f"Mode               : ARMORIQ_MODE=real")
@@ -40,27 +41,35 @@ def run_advanced_audit():
 
     real_adapter = RealArmorIQ(api_key=api_key)
 
+    core_verified = True
+    delegation_verified = False
+    resume_verified = False
+
     # -------------------------------------------------------------
     # 1. Capture Plan & Token Minting
     # -------------------------------------------------------------
     print("[1/5] Testing Plan Capture & Intent Token Minting...")
-    plan_res = real_adapter.capture_plan(
-        objective="Procure-to-Pay Autonomous Settle Batch 1",
-        context={
-            "mission_id": "audit_mission_01",
-            "approved_payees": ["1122334455", "9988776655"],
-            "spend_ceilings": {"per_invoice_paise": 50000000, "mission_paise": 200000000},
-            "open_pos": ["PO-1001", "PO-1004"],
-        },
-    )
-    print(f"      Plan Hash Prefix  : {plan_res.plan_hash[:16]}...")
+    try:
+        plan_res = real_adapter.capture_plan(
+            objective="Procure-to-Pay Autonomous Settle Batch 1",
+            context={
+                "mission_id": "audit_mission_01",
+                "approved_payees": ["1122334455", "9988776655"],
+                "spend_ceilings": {"per_invoice_paise": 50000000, "mission_paise": 200000000},
+                "open_pos": ["PO-1001", "PO-1004"],
+            },
+        )
+        print(f"      Plan Hash Prefix  : {plan_res.plan_hash[:16]}...")
 
-    token_res = real_adapter.get_intent_token(plan_res.plan_hash, plan_res.envelope)
-    print(f"      Token Status      : ISSUED ([REDACTED])")
-    print(f"      Merkle Root       : {token_res.merkle_root[:16]}...")
+        token_res = real_adapter.get_intent_token(plan_res.plan_hash, plan_res.envelope)
+        print(f"      Token Status      : ISSUED ([REDACTED])")
+        print(f"      Merkle Root       : {token_res.merkle_root[:16] if token_res.merkle_root else 'None (Token-bound)'}...")
+    except Exception as e:
+        print(f"      [FAILED] Token issuance error: {e}")
+        sys.exit(1)
 
     # -------------------------------------------------------------
-    # 2. Remote MCP Tool Invocation Verification
+    # 2. Remote MCP Tool Invocation Verification (Planned -> ALLOW)
     # -------------------------------------------------------------
     print("\n[2/5] Testing Remote MCP 'fetch_invoices' Invocation (Planned)...")
     decision_read = real_adapter.invoke(
@@ -70,12 +79,16 @@ def run_advanced_audit():
         intent_token=token_res.intent_token,
     )
     print(f"      Verdict           : {decision_read.verdict}")
+    print(f"      Reason            : {decision_read.reason}")
     print(f"      Proof Fields      : {list(decision_read.proof.keys())}")
-    print(f"      Proof Status      : {decision_read.proof.get('status')}")
-    print(f"      Proof Verified    : {decision_read.proof.get('verified')}")
+
+    if decision_read.verdict != "ALLOW":
+        print(f"      [ERROR] Expected ALLOW for planned tool, got {decision_read.verdict}")
+        core_verified = False
+        sys.exit(1)
 
     # -------------------------------------------------------------
-    # 3. Out-of-Plan Tool Invocation (Security BLOCK)
+    # 3. Out-of-Plan Tool Invocation (Unplanned -> BLOCK)
     # -------------------------------------------------------------
     print("\n[3/5] Testing Out-of-Plan Tool 'unplanned_malicious_tool' (Should BLOCK)...")
     decision_unplanned = real_adapter.invoke(
@@ -88,77 +101,78 @@ def run_advanced_audit():
     print(f"      Reason            : {decision_unplanned.reason}")
     print(f"      Rule Matched      : {decision_unplanned.rule_matched}")
 
-    # -------------------------------------------------------------
-    # 4. Subagent Delegation & Attenuation
-    # -------------------------------------------------------------
-    print("\n[4/5] Testing Subagent Delegation (Controller -> Matcher)...")
-    try:
-        grant_matcher = real_adapter.delegate(
-            mission_id="audit_mission_01",
-            parent_agent="controller",
-            child_agent="matcher",
-            capabilities=["fetch_invoices"],  # Matcher can only read
-            ceiling_paise=0,
-            payee_scope=[],
-            intent_token=token_res.intent_token,
-        )
-        print(f"      Grant ID          : {grant_matcher.grant_id}")
-        print(f"      Capabilities      : {grant_matcher.capabilities}")
-        print(f"      Signature Prefix  : {grant_matcher.signature[:24]}...")
+    if decision_unplanned.verdict != "BLOCK":
+        print(f"      [ERROR] Expected BLOCK for unplanned action, got {decision_unplanned.verdict}")
+        core_verified = False
+        sys.exit(1)
 
-        # 4a. Delegated Allowed Action
-        print("      Testing Delegated In-Scope Action ('fetch_invoices')...")
-        dec_del_allow = real_adapter.invoke(
-            agent_id="matcher",
-            tool="fetch_invoices",
-            params={},
-            grant=grant_matcher,
-            intent_token=token_res.intent_token,
-        )
-        print(f"      Delegated Verdict : {dec_del_allow.verdict}")
-
-        # 4b. Delegated Out-of-Scope Action (Attempt initiate_payment with Matcher grant)
-        print("      Testing Delegated Out-of-Scope Action ('initiate_payment' by Matcher)...")
-        dec_del_block = real_adapter.invoke(
-            agent_id="matcher",
-            tool="initiate_payment",
-            params={"invoice_id": "INV-2036", "payee_account": "1122334455", "amount_paise": 3850000},
-            grant=grant_matcher,
-            intent_token=token_res.intent_token,
-        )
-        print(f"      Out-of-Scope Verdict: {dec_del_block.verdict}")
-        print(f"      Reason            : {dec_del_block.reason}")
-
-    except Exception as e:
-        print(f"      Delegation Note   : {e}")
+    if "ARMORIQ_UNAVAILABLE" in decision_unplanned.reason:
+        print("      [WARN] Block was due to service unavailability, not policy mismatch.")
+        core_verified = False
+        sys.exit(1)
 
     # -------------------------------------------------------------
-    # 5. HOLD & Resume Re-Authorization Audit
+    # 4. Subagent Delegation Audit (Problem 2)
     # -------------------------------------------------------------
-    print("\n[5/5] Testing HOLD & Resume Re-Authorization Mechanism...")
+    print("\n[4/5] Auditing Subagent Delegation Mechanism (Problem 2)...")
+    grant_matcher = real_adapter.delegate(
+        mission_id="audit_mission_01",
+        parent_agent="controller",
+        child_agent="matcher",
+        capabilities=["fetch_invoices"],
+        ceiling_paise=0,
+        payee_scope=[],
+        intent_token=token_res.intent_token,
+    )
+    print(f"      Grant ID          : {grant_matcher.grant_id}")
+    print(f"      Grant Signature   : {grant_matcher.signature[:35]}...")
+
+    if "armoriq_delegation" in grant_matcher.signature:
+        delegation_verified = True
+        print("      Delegation Status : VERIFIED (SDK delegation token returned)")
+    else:
+        print("      Delegation Status : PARTIAL (SDK delegation endpoint not supported in this session; client-attenuated)")
+
+    # -------------------------------------------------------------
+    # 5. HOLD & Resume Approval Audit (Problem 1)
+    # -------------------------------------------------------------
+    print("\n[5/5] Auditing HOLD & Resume Approval Mechanism (Problem 1)...")
     hold_decision_id = "dec_hold_audit_001"
     original_params = {"invoice_id": "INV-2041", "payee_account": "509900443322", "amount_paise": 4620000}
 
-    # 5a. CFO Valid Resume
-    print("      Testing Valid Human CFO Approval...")
-    resume_valid = real_adapter.resume(
+    resume_res = real_adapter.resume(
         decision_id=hold_decision_id,
         approver="cfo@mandate.internal",
         expected_params=original_params,
         intent_token=token_res.intent_token,
     )
-    print(f"      Resume Verdict    : {resume_valid.verdict}")
-    print(f"      Resume Reason     : {resume_valid.reason}")
-    print(f"      Proof Details     : {resume_valid.proof}")
+    print(f"      Resume Verdict    : {resume_res.verdict}")
+    print(f"      Resume Reason     : {resume_res.reason}")
 
-    # 5b. Parameter Tamper Detection on Resume
-    print("      Testing Parameter Tampering Detection during Resume...")
-    tampered_params = {"invoice_id": "INV-2041", "payee_account": "9999999999", "amount_paise": 99999999}
-    if original_params != tampered_params:
-        print("      Parameter Tamper  : DETECTED (Original payee/amount mismatch)")
+    if resume_res.verdict == "ALLOW" and resume_res.proof.get("status") == "APPROVED":
+        resume_verified = True
+        print("      Resume Status     : VERIFIED (ArmorIQ cloud approval confirmed)")
+    else:
+        print("      Resume Status     : PARTIAL (Cloud approval session unavailable; fail-closed in real mode)")
 
+    # -------------------------------------------------------------
+    # Final Summary Matrix
+    # -------------------------------------------------------------
     print("\n" + "=" * 75)
-    print("AUDIT COMPLETED: LIVE ADVANCED ENFORCEMENT VERIFIED")
+    print("MANDATE — FINAL LIVE ARMORIQ CAPABILITY MATRIX")
+    print("=" * 75)
+    print(f"1. Plan Capture & Intent Token Issuance : {'VERIFIED' if core_verified else 'FAILED'}")
+    print(f"2. Remote MCP Tool Invocation (ALLOW)   : {'VERIFIED' if core_verified else 'FAILED'}")
+    print(f"3. Out-of-Plan Action Interception (BLOCK): {'VERIFIED' if core_verified else 'FAILED'}")
+    print(f"4. Cryptographic Delegation (Problem 2) : {'VERIFIED' if delegation_verified else 'PARTIAL'}")
+    print(f"5. Cloud Approval / Resume (Problem 1)  : {'VERIFIED' if resume_verified else 'PARTIAL'}")
+    print("-" * 75)
+    if core_verified and not (delegation_verified and resume_verified):
+        print("FINAL VERDICT: CORE ARMORIQ VERIFIED; DELEGATION/RESUME PARTIAL")
+    elif core_verified and delegation_verified and resume_verified:
+        print("FINAL VERDICT: FULL REAL ARMORIQ VERIFIED")
+    else:
+        print("FINAL VERDICT: NOT VERIFIED")
     print("=" * 75)
 
 

@@ -95,17 +95,32 @@ def test_real_armoriq_adapter_mapping_with_mock_client():
     )
     assert isinstance(blocked_invoke, InvokeDecision)
     assert blocked_invoke.verdict == "BLOCK"
-    assert "CAPABILITY_NOT_DELEGATED" in blocked_invoke.reason
+    assert "LOCAL_CAPABILITY_ATTENUATION" in blocked_invoke.reason or "does not possess capability" in blocked_invoke.reason
 
-    # 5. Test resume
-    resumed = real_adapter.resume(
-        decision_id="dec_test_01",
-        approver="cfo@mandate.internal",
-        expected_params={"paise": 14500000},
-        intent_token=token_res.intent_token,
-    )
-    assert isinstance(resumed, InvokeDecision)
-    assert resumed.verdict == "ALLOW"
+    # 5. Test resume with approved status
+    with patch.object(real_adapter.client, "get_delegation_status", return_value="approved"):
+        with patch.object(real_adapter.client, "mark_delegation_executed", return_value=None):
+            resumed = real_adapter.resume(
+                decision_id="dec_test_01",
+                approver="cfo@mandate.internal",
+                expected_params={"paise": 14500000},
+                intent_token=token_res.intent_token,
+            )
+            assert isinstance(resumed, InvokeDecision)
+            assert resumed.verdict == "ALLOW"
+            assert "approval" in resumed.reason.lower()
+
+
+    # 5b. Test resume fails closed if status is rejected
+    with patch.object(real_adapter.client, "get_delegation_status", return_value="rejected"):
+        resumed_rejected = real_adapter.resume(
+            decision_id="dec_test_01",
+            approver="cfo@mandate.internal",
+            expected_params={"paise": 14500000},
+            intent_token=token_res.intent_token,
+        )
+        assert resumed_rejected.verdict == "BLOCK"
+
 
 
 def test_real_armoriq_get_intent_token_requires_prior_capture():

@@ -208,7 +208,7 @@ class RealArmorIQ:
             ):
                 merkle_root = sdk_token.raw_token["merkle_root"]
             else:
-                merkle_root = plan_hash[:32]
+                merkle_root = ""
 
             # Cache the actual SDK IntentToken for invoke and delegation operations
             self._tokens[token_str] = sdk_token
@@ -235,10 +235,11 @@ class RealArmorIQ:
         payee_scope: List[str],
         intent_token: str,
     ) -> DelegationGrant:
-        """Issues cryptographically bound delegation grant for subagents under the active token."""
+        """Issues cryptographically bound delegation grant via ArmorIQ SDK."""
         import uuid
         grant_id = f"grant_{uuid.uuid4().hex[:12]}"
-        sdk_delegation_status = "CLIENT_BOUND_GRANT"
+        sdk_delegation_status = "ARMORIQ_DELEGATION_UNSUPPORTED"
+        grant_signature = "UNSUPPORTED_IN_SDK_SESSION"
 
         sdk_token = self._tokens.get(intent_token)
         if sdk_token and hasattr(self.client, "delegate"):
@@ -251,10 +252,19 @@ class RealArmorIQ:
                     target_agent=child_agent,
                 )
                 if isinstance(res, DelegationResult):
-                    sdk_delegation_status = "ARMORIQ_SDK_DELEGATED"
+                    grant_id = getattr(res, "delegation_id", grant_id)
+                    delegated_token = getattr(res, "delegated_token", None)
+                    if delegated_token:
+                        grant_signature = getattr(delegated_token, "signature", "") or f"armoriq_delegation_{grant_id}"
+                        self._tokens[delegated_token.token_id] = delegated_token
+                        self._tokens[grant_id] = delegated_token
+                    else:
+                        grant_signature = f"armoriq_delegation_{grant_id}"
                     self._delegations[grant_id] = res
+                    sdk_delegation_status = "ARMORIQ_SDK_DELEGATED"
             except Exception as e:
-                logger.info("ArmorIQ SDK delegation call note (client-bound fallback): %s", e)
+                logger.info("ArmorIQ SDK delegation call note: %s", e)
+                grant_signature = f"ARMORIQ_DELEGATION_UNSUPPORTED: {str(e)[:50]}"
 
         return DelegationGrant(
             grant_id=grant_id,
@@ -264,7 +274,7 @@ class RealArmorIQ:
             capabilities=capabilities,
             ceiling_paise=ceiling_paise,
             payee_scope=payee_scope,
-            signature=f"armoriq_{sdk_delegation_status.lower()}_{grant_id}",
+            signature=grant_signature,
         )
 
     def invoke(
@@ -276,13 +286,13 @@ class RealArmorIQ:
         intent_token: Optional[str] = None,
     ) -> InvokeDecision:
         """Evaluates whether an agent action is authorized via ArmorIQ SDK."""
-        # 1. Capability attenuation enforcement
+        # 1. Capability attenuation enforcement at client gateway layer
         if grant and tool not in grant.capabilities:
             return InvokeDecision(
                 verdict="BLOCK",
-                reason=f"CAPABILITY_NOT_DELEGATED: Agent '{agent_id}' does not possess capability '{tool}' in active grant",
-                rule_matched="DELEGATION_SCOPE_EXCEEDED",
-                proof={"enforcer": "ARMORIQ_SDK", "grant_id": grant.grant_id, "verdict": "BLOCK"},
+                reason=f"LOCAL_CAPABILITY_ATTENUATION: Agent '{agent_id}' does not possess capability '{tool}' in active client-scoped grant",
+                rule_matched="CLIENT_DELEGATION_SCOPE_EXCEEDED",
+                proof={"enforcer": "LOCAL_GATEWAY_ATTENUATION", "grant_id": grant.grant_id, "verdict": "BLOCK"},
             )
 
         sdk_token = self._tokens.get(intent_token) if intent_token else None
@@ -315,15 +325,19 @@ class RealArmorIQ:
                     proof={"enforcer": "ARMORIQ_SDK", "status": "error"},
                 )
 
+            verified_val = getattr(res, "verified", None)
+            proof_data: Dict[str, Any] = {
+                "enforcer": "ARMORIQ_SDK",
+                "status": getattr(res, "status", "success"),
+                "execution_time": getattr(res, "execution_time", 0.0),
+            }
+            if verified_val is not None:
+                proof_data["verified"] = verified_val
+
             return InvokeDecision(
                 verdict="ALLOW",
                 reason="ArmorIQ SDK verified action against sealed authority plan",
-                proof={
-                    "enforcer": "ARMORIQ_SDK",
-                    "status": getattr(res, "status", "success"),
-                    "verified": getattr(res, "verified", True),
-                    "execution_time": getattr(res, "execution_time", 0.0),
-                },
+                proof=proof_data,
             )
         except PolicyBlockedException as e:
             return InvokeDecision(
@@ -370,14 +384,38 @@ class RealArmorIQ:
         expected_params: Dict[str, Any],
         intent_token: Optional[str] = None,
     ) -> InvokeDecision:
-        """Evaluates human CFO approval to resume a previously HELD decision under ArmorIQ."""
-        return InvokeDecision(
-            verdict="ALLOW",
-            reason=f"Human CFO approval granted by {approver}; re-authorized under ArmorIQ token context",
-            proof={
-                "enforcer": "ARMORIQ_SDK",
-                "resumed_decision_id": decision_id,
-                "approver": approver,
-                "token_bound": bool(intent_token),
-            },
-        )
+        """Evaluates human CFO approval to resume a previously HELD decision via ArmorIQ session."""
+        try:
+            if hasattr(self.client, "get_delegation_status"):
+                status = self.client.get_delegation_status(decision_id)
+                if status == "approved":
+                    if hasattr(self.client, "mark_delegation_executed"):
+                        self.client.mark_delegation_executed(approver, decision_id)
+                    return InvokeDecision(
+                        verdict="ALLOW",
+                        reason=f"ArmorIQ delegation approval confirmed for {decision_id}",
+                        proof={"enforcer": "ARMORIQ_SDK", "status": "APPROVED", "delegation_id": decision_id},
+                    )
+                elif status in ("rejected", "expired"):
+                    return InvokeDecision(
+                        verdict="BLOCK",
+                        reason=f"ArmorIQ delegation status is '{status}' for {decision_id}",
+                        rule_matched="DELEGATION_HOLD_REJECTED",
+                        proof={"enforcer": "ARMORIQ_SDK", "status": status, "delegation_id": decision_id},
+                    )
+            
+            # If no active cloud delegation session for decision_id, fail closed in real mode
+            return InvokeDecision(
+                verdict="BLOCK",
+                reason=f"ARMORIQ_RESUME_UNSUPPORTED: No active ArmorIQ cloud approval session found for decision '{decision_id}'",
+                rule_matched="RESUME_SESSION_UNAVAILABLE",
+                proof={"enforcer": "ARMORIQ_SDK", "status": "ARMORIQ_RESUME_UNSUPPORTED", "decision_id": decision_id},
+            )
+        except Exception as e:
+            return InvokeDecision(
+                verdict="BLOCK",
+                reason=f"ARMORIQ_RESUME_UNSUPPORTED: ArmorIQ approval endpoint returned error ({str(e)})",
+                rule_matched="RESUME_ENDPOINT_UNAVAILABLE",
+                proof={"enforcer": "ARMORIQ_SDK", "status": "ARMORIQ_RESUME_UNSUPPORTED", "detail": str(e)},
+            )
+
