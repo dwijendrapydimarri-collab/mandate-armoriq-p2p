@@ -43,9 +43,14 @@ logger = logging.getLogger(__name__)
 class RealArmorIQ:
     """Genuine ArmorIQ SDK integration wrapper implementing ArmorIQAdapter Protocol."""
 
-    def __init__(self, api_key: Optional[str] = None, endpoint: Optional[str] = None):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        iap_endpoint: Optional[str] = None,
+        proxy_endpoint: Optional[str] = None,
+        backend_endpoint: Optional[str] = None,
+    ):
         self.api_key = api_key or os.environ.get("ARMORIQ_API_KEY", "")
-        self.endpoint = endpoint or os.environ.get("ARMORIQ_ENDPOINT")
 
         if not ARMORIQ_SDK_AVAILABLE:
             raise RuntimeError(
@@ -57,14 +62,48 @@ class RealArmorIQ:
                 "ARMORIQ_API_KEY environment variable is required when running in ARMORIQ_MODE=real."
             )
 
+        # Support clean documented endpoint overrides (IAP_ENDPOINT, PROXY_ENDPOINT, BACKEND_ENDPOINT)
+        raw_backend = (
+            backend_endpoint
+            or os.environ.get("BACKEND_ENDPOINT")
+            or os.environ.get("ARMORIQ_BACKEND_ENDPOINT")
+            or os.environ.get("ARMORIQ_ENDPOINT")
+        )
+        if raw_backend:
+            raw_backend = raw_backend.rstrip("/")
+            # Strip stale legacy /v1 suffix if present
+            if raw_backend.endswith("/v1"):
+                raw_backend = raw_backend[:-3]
+
+        raw_iap = (
+            iap_endpoint
+            or os.environ.get("IAP_ENDPOINT")
+            or os.environ.get("ARMORIQ_IAP_ENDPOINT")
+        )
+        if raw_iap:
+            raw_iap = raw_iap.rstrip("/")
+
+        raw_proxy = (
+            proxy_endpoint
+            or os.environ.get("PROXY_ENDPOINT")
+            or os.environ.get("ARMORIQ_PROXY_ENDPOINT")
+        )
+        if raw_proxy:
+            raw_proxy = raw_proxy.rstrip("/")
+
         client_kwargs: Dict[str, Any] = {"api_key": self.api_key}
-        if self.endpoint:
-            client_kwargs["backend_endpoint"] = self.endpoint
+        if raw_backend:
+            client_kwargs["backend_endpoint"] = raw_backend
+        if raw_iap:
+            client_kwargs["iap_endpoint"] = raw_iap
+        if raw_proxy:
+            client_kwargs["proxy_endpoint"] = raw_proxy
 
         self.client = ArmorIQClient(**client_kwargs)
         self._captured_plans: Dict[str, PlanCapture] = {}
         self._tokens: Dict[str, IntentToken] = {}
         self._delegations: Dict[str, Any] = {}
+
 
     def capture_plan(self, objective: str, context: Dict[str, Any]) -> PlanResult:
         """Captures structured procurement execution plan via genuine ArmorIQ SDK."""

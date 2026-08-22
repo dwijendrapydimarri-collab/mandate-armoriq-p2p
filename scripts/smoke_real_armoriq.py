@@ -23,21 +23,20 @@ def run_smoke_test():
         print("[SKIP] ARMORIQ_API_KEY is not set. To run live cloud smoke test, set ARMORIQ_API_KEY.")
         sys.exit(0)
 
-    endpoint = os.environ.get("ARMORIQ_ENDPOINT", "https://api.armoriq.ai/v1")
-    parsed_url = urlparse(endpoint)
-    endpoint_host = parsed_url.netloc or parsed_url.path
-
-    print("=" * 70)
-    print("MANDATE — GENUINE ARMORIQ SDK LIVE SMOKE TEST")
-    print("=" * 70)
-    print(f"SDK Version       : {getattr(armoriq_sdk, '__version__', 'unknown')}")
-    print(f"Mode              : ARMORIQ_MODE=real")
-    print(f"Endpoint Host     : {endpoint_host}")
-    print(f"API Key Redacted  : {api_key[:6]}...{api_key[-4:] if len(api_key) > 10 else ''}")
-    print("-" * 70)
-
     try:
-        real_adapter = RealArmorIQ(api_key=api_key, endpoint=endpoint)
+        real_adapter = RealArmorIQ(api_key=api_key)
+
+        print("=" * 70)
+        print("MANDATE — GENUINE ARMORIQ SDK LIVE SMOKE TEST")
+        print("=" * 70)
+        print(f"SDK Version       : {getattr(armoriq_sdk, '__version__', 'unknown')}")
+        print(f"Mode              : ARMORIQ_MODE=real")
+        print(f"IAP Endpoint      : {real_adapter.client.iap_endpoint}")
+        print(f"Proxy Endpoint    : {real_adapter.client.default_proxy_endpoint}")
+        print(f"Backend Endpoint  : {real_adapter.client.backend_endpoint}")
+        print(f"API Key Redacted  : {api_key[:6]}...{api_key[-4:] if len(api_key) > 10 else ''}")
+        print("-" * 70)
+
 
         # Step 1: Capture Plan
         print("[1/4] Capturing plan via ArmorIQClient...")
