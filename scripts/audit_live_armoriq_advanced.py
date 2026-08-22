@@ -12,9 +12,23 @@ Exit Codes:
 - 1: Core ArmorIQ Failure (planned action denied or unplanned action allowed)
 """
 
-import os
-import sys
-import json
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
+
+for env_name in (".env.private", ".env"):
+    env_path = os.path.join(BASE_DIR, env_name)
+    if os.path.exists(env_path):
+        try:
+            with open(env_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        if k.strip() not in os.environ:
+                            os.environ[k.strip()] = v.strip()
+        except Exception:
+            pass
 
 try:
     import armoriq_sdk
@@ -30,6 +44,7 @@ def run_advanced_audit():
     if not api_key:
         print("[SKIP] ARMORIQ_API_KEY is not set.")
         sys.exit(0)
+
 
     print("=" * 75)
     print("MANDATE — LIVE REAL ARMORIQ SDK ENFORCEMENT & CAPABILITY AUDIT")
