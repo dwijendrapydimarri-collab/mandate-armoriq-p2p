@@ -302,21 +302,28 @@ def _get_agent_token(agent_slug: str) -> str:
 
 
 def _verify_agent_auth(request, agent_slug: str) -> bool:
-    """Validates Bearer token or X-Agent-Key header using constant-time comparison."""
+    """Validates X-API-Key, Bearer token, or X-Agent-Key header using constant-time comparison."""
     expected_token = _get_agent_token(agent_slug)
-    auth_header = request.headers.get("Authorization", "")
-    agent_key = request.headers.get("X-Agent-Key", "")
+    if not expected_token:
+        return False
+
+    auth_header = request.headers.get("authorization", "")
+    x_api_key = request.headers.get("x-api-key", "")
+    x_agent_key = request.headers.get("x-agent-key", "")
 
     provided_token = None
-    if auth_header.startswith("Bearer "):
-        provided_token = auth_header.split("Bearer ", 1)[1].strip()
-    elif agent_key:
-        provided_token = agent_key.strip()
+    if x_api_key:
+        provided_token = x_api_key.strip()
+    elif auth_header.lower().startswith("bearer "):
+        provided_token = auth_header.split(" ", 1)[1].strip()
+    elif x_agent_key:
+        provided_token = x_agent_key.strip()
 
-    if not provided_token or not expected_token:
+    if not provided_token:
         return False
 
     return hmac.compare_digest(provided_token, expected_token)
+
 
 
 
@@ -434,16 +441,16 @@ async def agent_invoke(request):
 
 
 routes = [
-    Route("/health", health_check, methods=["GET"]),
-    Route("/", health_check, methods=["GET"]),
+    Route("/health", health_check, methods=["GET", "HEAD"]),
+    Route("/", health_check, methods=["GET", "HEAD"]),
     Route("/mcp", handle_http_mcp, methods=["POST"]),
     Route("/", handle_http_mcp, methods=["POST"]),
     Route("/sse", sse_endpoint, methods=["GET"]),
     Route("/messages", sse_messages, methods=["POST"]),
     # Dedicated Agent Endpoints
-    Route("/agents", list_agents, methods=["GET"]),
-    Route("/agents/{agent_slug}/health", agent_health, methods=["GET"]),
-    Route("/agents/{agent_slug}/identity", agent_identity, methods=["GET"]),
+    Route("/agents", list_agents, methods=["GET", "HEAD"]),
+    Route("/agents/{agent_slug}/health", agent_health, methods=["GET", "HEAD"]),
+    Route("/agents/{agent_slug}/identity", agent_identity, methods=["GET", "HEAD"]),
     Route("/agents/{agent_slug}/invoke", agent_invoke, methods=["POST"]),
 ]
 
