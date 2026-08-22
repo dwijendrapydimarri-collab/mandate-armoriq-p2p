@@ -34,9 +34,8 @@ def run_smoke_test():
         print(f"IAP Endpoint      : {real_adapter.client.iap_endpoint}")
         print(f"Proxy Endpoint    : {real_adapter.client.default_proxy_endpoint}")
         print(f"Backend Endpoint  : {real_adapter.client.backend_endpoint}")
-        print(f"API Key Redacted  : {api_key[:6]}...{api_key[-4:] if len(api_key) > 10 else ''}")
+        print(f"API Key Status   : CONFIGURED (Length: {len(api_key)}, [REDACTED])")
         print("-" * 70)
-
 
         # Step 1: Capture Plan
         print("[1/4] Capturing plan via ArmorIQClient...")
@@ -58,8 +57,9 @@ def run_smoke_test():
             plan_hash=plan_res.plan_hash,
             envelope=plan_res.envelope,
         )
-        print(f"      Token ID Prefix  : {token_res.intent_token[:12]}... (Redacted)")
+        print(f"      Token Status     : ISSUED ([REDACTED])")
         print(f"      Merkle Root      : {token_res.merkle_root[:16]}...")
+
 
         # Step 3: Planned Action Invocation (Harmless read-only or authorized action)
         print("[3/4] Testing planned action authorization ('fetch_invoices')...")
