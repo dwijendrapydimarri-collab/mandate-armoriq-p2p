@@ -250,6 +250,9 @@ async def sse_messages(request):
 # Dedicated Agent Identity & Health Endpoints
 # -------------------------------------------------------------
 
+import hmac
+import secrets
+
 AGENT_REGISTRY = {
     "controller": {
         "agent_id": "mandate-controller",
@@ -257,8 +260,6 @@ AGENT_REGISTRY = {
         "version": "1.0.0",
         "role": "ROOT_MISSION_ORCHESTRATOR",
         "capabilities": ["capture_plan", "get_intent_token", "delegate", "seal_authority"],
-        "token": "agent_tok_controller_mandate_sec_2026",
-        "public_key": "ed25519_pub_controller_mandate_2026",
         "description": "Root orchestrator responsible for trusted authority sealing and capability delegation",
     },
     "matcher": {
@@ -267,8 +268,6 @@ AGENT_REGISTRY = {
         "version": "1.0.0",
         "role": "SPECIALIST_SUBAGENT_READ_ONLY",
         "capabilities": ["fetch_invoices", "verify_match"],
-        "token": "agent_tok_matcher_mandate_sec_2026",
-        "public_key": "ed25519_pub_matcher_mandate_2026",
         "spend_ceiling_paise": 0,
         "description": "Specialist subagent strictly bounded to read-only invoice fetching and 3-way matching",
     },
@@ -278,24 +277,47 @@ AGENT_REGISTRY = {
         "version": "1.0.0",
         "role": "SPECIALIST_SUBAGENT_DISBURSER",
         "capabilities": ["initiate_payment"],
-        "token": "agent_tok_disburser_mandate_sec_2026",
-        "public_key": "ed25519_pub_disburser_mandate_2026",
         "spend_ceiling_paise": 50000000,
         "description": "Disbursement subagent bounded by CFO spend ceilings and approved payee accounts",
     },
 }
 
 
-def _verify_agent_auth(request, expected_token: str) -> bool:
-    """Validates Bearer token or X-Agent-Key header."""
+def _get_agent_token(agent_slug: str) -> str:
+    """Retrieves agent token from environment or generates a secure ephemeral token in memory."""
+    env_var_map = {
+        "controller": "MANDATE_CONTROLLER_AGENT_TOKEN",
+        "matcher": "MANDATE_MATCHER_AGENT_TOKEN",
+        "disburser": "MANDATE_DISBURSER_AGENT_TOKEN",
+    }
+    env_key = env_var_map.get(agent_slug.lower())
+    if env_key and os.environ.get(env_key):
+        return os.environ[env_key]
+
+    if not hasattr(_get_agent_token, "_ephemeral_tokens"):
+        _get_agent_token._ephemeral_tokens = {}  # type: ignore
+    if agent_slug not in _get_agent_token._ephemeral_tokens:  # type: ignore
+        _get_agent_token._ephemeral_tokens[agent_slug] = secrets.token_urlsafe(32)  # type: ignore
+    return _get_agent_token._ephemeral_tokens[agent_slug]  # type: ignore
+
+
+def _verify_agent_auth(request, agent_slug: str) -> bool:
+    """Validates Bearer token or X-Agent-Key header using constant-time comparison."""
+    expected_token = _get_agent_token(agent_slug)
     auth_header = request.headers.get("Authorization", "")
     agent_key = request.headers.get("X-Agent-Key", "")
+
+    provided_token = None
     if auth_header.startswith("Bearer "):
-        token = auth_header.split("Bearer ", 1)[1].strip()
-        return token == expected_token
-    if agent_key:
-        return agent_key == expected_token
-    return False
+        provided_token = auth_header.split("Bearer ", 1)[1].strip()
+    elif agent_key:
+        provided_token = agent_key.strip()
+
+    if not provided_token or not expected_token:
+        return False
+
+    return hmac.compare_digest(provided_token, expected_token)
+
 
 
 async def list_agents(request):
@@ -340,7 +362,7 @@ async def agent_identity(request):
     agent_info = AGENT_REGISTRY[agent_slug]
 
     # Verify authentication
-    if not _verify_agent_auth(request, agent_info["token"]):
+    if not _verify_agent_auth(request, agent_slug):
         return JSONResponse(
             {
                 "error": "Unauthorized: Valid Agent Bearer Token or X-Agent-Key required",
@@ -356,7 +378,6 @@ async def agent_identity(request):
         "name": agent_info["name"],
         "role": agent_info["role"],
         "capabilities": agent_info["capabilities"],
-        "public_key": agent_info["public_key"],
         "spend_ceiling_paise": agent_info.get("spend_ceiling_paise", 0),
         "auth_status": "AUTHENTICATED",
         "mcp_server": "mandate-mcp",
@@ -372,8 +393,9 @@ async def agent_invoke(request):
     agent_info = AGENT_REGISTRY[agent_slug]
 
     # Verify authentication
-    if not _verify_agent_auth(request, agent_info["token"]):
+    if not _verify_agent_auth(request, agent_slug):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
 
     try:
         body = await request.json()
