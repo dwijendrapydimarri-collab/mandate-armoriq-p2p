@@ -324,21 +324,38 @@ def _verify_agent_auth(request, agent_slug: str) -> bool:
         return False
 
     auth_header = request.headers.get("authorization", "")
-    x_api_key = request.headers.get("x-api-key", "")
-    x_agent_key = request.headers.get("x-agent-key", "")
+    x_api_key = (
+        request.headers.get("x-api-key")
+        or request.headers.get("api-key")
+        or request.headers.get("apikey")
+        or request.headers.get("x-agent-key")
+        or request.headers.get("x-agent-token")
+        or ""
+    )
 
     provided_token = None
     if x_api_key:
         provided_token = x_api_key.strip()
-    elif auth_header.lower().startswith("bearer "):
-        provided_token = auth_header.split(" ", 1)[1].strip()
-    elif x_agent_key:
-        provided_token = x_agent_key.strip()
+    elif auth_header:
+        auth_lower = auth_header.lower()
+        if auth_lower.startswith("bearer ") or auth_lower.startswith("apikey ") or auth_lower.startswith("api-key "):
+            provided_token = auth_header.split(" ", 1)[1].strip()
+        else:
+            provided_token = auth_header.strip()
 
-    if not provided_token:
-        return False
+    is_authenticated = bool(provided_token and hmac.compare_digest(provided_token, expected_token))
 
-    return hmac.compare_digest(provided_token, expected_token)
+    logger.info(
+        "Agent auth check: slug=%s, method=%s, path=%s, auth_headers_present=%s, authenticated=%s",
+        agent_slug,
+        request.method,
+        request.url.path,
+        [h for h in ["x-api-key", "api-key", "authorization", "x-agent-key"] if h in request.headers],
+        is_authenticated,
+    )
+
+    return is_authenticated
+
 
 
 
