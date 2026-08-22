@@ -246,6 +246,171 @@ async def sse_messages(request):
     return JSONResponse({"status": "accepted"}, status_code=202)
 
 
+# -------------------------------------------------------------
+# Dedicated Agent Identity & Health Endpoints
+# -------------------------------------------------------------
+
+AGENT_REGISTRY = {
+    "controller": {
+        "agent_id": "mandate-controller",
+        "name": "Mandate Controller Root Orchestrator",
+        "version": "1.0.0",
+        "role": "ROOT_MISSION_ORCHESTRATOR",
+        "capabilities": ["capture_plan", "get_intent_token", "delegate", "seal_authority"],
+        "token": "agent_tok_controller_mandate_sec_2026",
+        "public_key": "ed25519_pub_controller_mandate_2026",
+        "description": "Root orchestrator responsible for trusted authority sealing and capability delegation",
+    },
+    "matcher": {
+        "agent_id": "mandate-matcher",
+        "name": "Mandate Matcher Specialist Agent",
+        "version": "1.0.0",
+        "role": "SPECIALIST_SUBAGENT_READ_ONLY",
+        "capabilities": ["fetch_invoices", "verify_match"],
+        "token": "agent_tok_matcher_mandate_sec_2026",
+        "public_key": "ed25519_pub_matcher_mandate_2026",
+        "spend_ceiling_paise": 0,
+        "description": "Specialist subagent strictly bounded to read-only invoice fetching and 3-way matching",
+    },
+    "disburser": {
+        "agent_id": "mandate-disburser",
+        "name": "Mandate Disburser Specialist Agent",
+        "version": "1.0.0",
+        "role": "SPECIALIST_SUBAGENT_DISBURSER",
+        "capabilities": ["initiate_payment"],
+        "token": "agent_tok_disburser_mandate_sec_2026",
+        "public_key": "ed25519_pub_disburser_mandate_2026",
+        "spend_ceiling_paise": 50000000,
+        "description": "Disbursement subagent bounded by CFO spend ceilings and approved payee accounts",
+    },
+}
+
+
+def _verify_agent_auth(request, expected_token: str) -> bool:
+    """Validates Bearer token or X-Agent-Key header."""
+    auth_header = request.headers.get("Authorization", "")
+    agent_key = request.headers.get("X-Agent-Key", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header.split("Bearer ", 1)[1].strip()
+        return token == expected_token
+    if agent_key:
+        return agent_key == expected_token
+    return False
+
+
+async def list_agents(request):
+    """Returns directory of all registered Mandate agents."""
+    agents_summary = [
+        {
+            "agent_id": info["agent_id"],
+            "name": info["name"],
+            "role": info["role"],
+            "capabilities": info["capabilities"],
+            "health_endpoint": f"/agents/{slug}/health",
+            "identity_endpoint": f"/agents/{slug}/identity",
+        }
+        for slug, info in AGENT_REGISTRY.items()
+    ]
+    return JSONResponse({"status": "ok", "service": "mandate-agents", "agents": agents_summary})
+
+
+async def agent_health(request):
+    """Health check for an individual registered agent."""
+    agent_slug = request.path_params.get("agent_slug", "").lower()
+    if agent_slug not in AGENT_REGISTRY:
+        return JSONResponse({"error": f"Agent '{agent_slug}' not found"}, status_code=404)
+
+    agent_info = AGENT_REGISTRY[agent_slug]
+    return JSONResponse({
+        "status": "ok",
+        "agent_id": agent_info["agent_id"],
+        "name": agent_info["name"],
+        "role": agent_info["role"],
+        "uptime": "HEALTHY",
+        "governance_mode": "GATEWAY_ENFORCED",
+    })
+
+
+async def agent_identity(request):
+    """Authenticated agent identity & capability inspection."""
+    agent_slug = request.path_params.get("agent_slug", "").lower()
+    if agent_slug not in AGENT_REGISTRY:
+        return JSONResponse({"error": f"Agent '{agent_slug}' not found"}, status_code=404)
+
+    agent_info = AGENT_REGISTRY[agent_slug]
+
+    # Verify authentication
+    if not _verify_agent_auth(request, agent_info["token"]):
+        return JSONResponse(
+            {
+                "error": "Unauthorized: Valid Agent Bearer Token or X-Agent-Key required",
+                "agent_id": agent_info["agent_id"],
+                "auth_scheme": "Bearer <agent_token>",
+            },
+            status_code=401,
+        )
+
+    return JSONResponse({
+        "status": "ok",
+        "agent_id": agent_info["agent_id"],
+        "name": agent_info["name"],
+        "role": agent_info["role"],
+        "capabilities": agent_info["capabilities"],
+        "public_key": agent_info["public_key"],
+        "spend_ceiling_paise": agent_info.get("spend_ceiling_paise", 0),
+        "auth_status": "AUTHENTICATED",
+        "mcp_server": "mandate-mcp",
+    })
+
+
+async def agent_invoke(request):
+    """Safe agent invocation entrypoint for test queries."""
+    agent_slug = request.path_params.get("agent_slug", "").lower()
+    if agent_slug not in AGENT_REGISTRY:
+        return JSONResponse({"error": f"Agent '{agent_slug}' not found"}, status_code=404)
+
+    agent_info = AGENT_REGISTRY[agent_slug]
+
+    # Verify authentication
+    if not _verify_agent_auth(request, agent_info["token"]):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    action = body.get("action", "")
+
+    # Matcher can only execute fetch_invoices
+    if agent_slug == "matcher":
+        if action in ("fetch_invoices", ""):
+            invoices = domain_fetch_invoices(db_path=DB_PATH)
+            return JSONResponse({
+                "agent_id": agent_info["agent_id"],
+                "action": "fetch_invoices",
+                "result": invoices,
+                "status": "COMPLETED",
+            })
+        else:
+            return JSONResponse(
+                {
+                    "error": f"CAPABILITY_ATTENUATION_BLOCKED: Matcher is not authorized to execute '{action}'",
+                    "allowed_capabilities": agent_info["capabilities"],
+                },
+                status_code=403,
+            )
+
+    # Disburser and Controller require full Gateway Intent Token — direct tool calls blocked
+    return JSONResponse(
+        {
+            "error": "DIRECT_DISBURSEMENT_BLOCKED: Money-moving tools cannot be invoked directly via agent endpoints; must pass through gateway.py with ArmorIQ IntentToken.",
+            "agent_id": agent_info["agent_id"],
+        },
+        status_code=403,
+    )
+
+
 routes = [
     Route("/health", health_check, methods=["GET"]),
     Route("/", health_check, methods=["GET"]),
@@ -253,6 +418,11 @@ routes = [
     Route("/", handle_http_mcp, methods=["POST"]),
     Route("/sse", sse_endpoint, methods=["GET"]),
     Route("/messages", sse_messages, methods=["POST"]),
+    # Dedicated Agent Endpoints
+    Route("/agents", list_agents, methods=["GET"]),
+    Route("/agents/{agent_slug}/health", agent_health, methods=["GET"]),
+    Route("/agents/{agent_slug}/identity", agent_identity, methods=["GET"]),
+    Route("/agents/{agent_slug}/invoke", agent_invoke, methods=["POST"]),
 ]
 
 middleware = [
@@ -269,5 +439,6 @@ app = Starlette(debug=True, routes=routes, middleware=middleware)
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("MCP_PORT", 8010))
-    print(f"Starting Mandate Remote MCP HTTP/SSE server on port {port}...")
+    print(f"Starting Mandate Remote MCP + Agent Service server on port {port}...")
     uvicorn.run(app, host="0.0.0.0", port=port)
+
