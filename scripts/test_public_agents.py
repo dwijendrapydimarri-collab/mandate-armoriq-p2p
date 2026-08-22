@@ -7,6 +7,21 @@ import os
 import sys
 import httpx
 
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+for env_name in (".env.private", ".env"):
+    env_path = os.path.join(BASE_DIR, env_name)
+    if os.path.exists(env_path):
+        try:
+            with open(env_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        if k.strip() not in os.environ:
+                            os.environ[k.strip()] = v.strip()
+        except Exception:
+            pass
+
 PUBLIC_URL = os.environ.get("MANDATE_PUBLIC_URL", "https://compare-phrase-siren.ngrok-free.dev")
 HEADERS = {"ngrok-skip-browser-warning": "true"}
 
@@ -15,6 +30,7 @@ AGENT_ENV_VARS = {
     "matcher": "MANDATE_MATCHER_AGENT_TOKEN",
     "disburser": "MANDATE_DISBURSER_AGENT_TOKEN",
 }
+
 
 
 def test_public_agents():
