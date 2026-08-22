@@ -1,0 +1,273 @@
+"""
+MANDATE — Remote Read-Only MCP HTTP/SSE Server
+Exposes a standards-compliant Model Context Protocol (MCP) server over HTTP and SSE.
+Specifically exposes ONLY `fetch_invoices` (read-only) for initial cloud proxy verification.
+Payment tools (initiate_payment) are disabled until read authorization is proven.
+"""
+
+import os
+import sys
+import json
+import uuid
+import asyncio
+import logging
+from typing import Dict, Any, List, Optional
+from starlette.applications import Starlette
+from starlette.responses import JSONResponse, Response, StreamingResponse
+from starlette.routing import Route
+from starlette.middleware import Middleware
+from starlette.middleware.cors import CORSMiddleware
+
+# Ensure repository root is on sys.path
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
+
+from backend.domain import domain_fetch_invoices, DB_PATH
+
+logger = logging.getLogger("remote_mcp")
+logging.basicConfig(level=logging.INFO)
+
+# Active SSE sessions: session_id -> asyncio.Queue
+active_sessions: Dict[str, asyncio.Queue] = {}
+
+PROTOCOL_VERSION = "2024-11-05"
+SERVER_INFO = {
+    "name": "mandate-mcp",
+    "version": "1.0.0",
+}
+
+FETCH_INVOICES_TOOL = {
+    "name": "fetch_invoices",
+    "description": "Fetch routine incoming vendor invoices pending three-way matching (Read-Only)",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "status": {
+                "type": "string",
+                "description": "Optional invoice status filter (e.g. 'pending')",
+                "default": "pending",
+            }
+        },
+        "required": [],
+    },
+}
+
+
+def handle_jsonrpc_request(body: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Processes an incoming JSON-RPC 2.0 MCP message."""
+    req_id = body.get("id")
+    method = body.get("method")
+    params = body.get("params", {})
+
+    if not method:
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "error": {"code": -32600, "message": "Invalid Request: Missing 'method' field"},
+        }
+
+    # 1. MCP initialize
+    if method == "initialize":
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {
+                "protocolVersion": PROTOCOL_VERSION,
+                "capabilities": {
+                    "tools": {"listChanged": False},
+                },
+                "serverInfo": SERVER_INFO,
+            },
+        }
+
+    # 2. MCP initialized notification
+    if method in ("notifications/initialized", "initialized"):
+        return None  # Notifications do not require a response
+
+    # 3. MCP ping
+    if method == "ping":
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {},
+        }
+
+    # 4. tools/list
+    if method == "tools/list":
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {
+                "tools": [FETCH_INVOICES_TOOL],
+            },
+        }
+
+    # 5. tools/call
+    if method == "tools/call":
+        tool_name = params.get("name")
+        arguments = params.get("arguments", {})
+
+        if tool_name == "fetch_invoices":
+            try:
+                invoices = domain_fetch_invoices(db_path=DB_PATH)
+                return {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": json.dumps(invoices, indent=2),
+                            }
+                        ],
+                        "isError": False,
+                    },
+                }
+            except Exception as e:
+                logger.error("Error executing fetch_invoices: %s", e)
+                return {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": f"Error fetching invoices: {str(e)}",
+                            }
+                        ],
+                        "isError": True,
+                    },
+                }
+
+        # Any unauthorized / unexposed tool (including payment tools)
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "error": {
+                "code": -32601,
+                "message": f"Tool '{tool_name}' is not registered or disabled on read-only MCP verification endpoint",
+            },
+        }
+
+    # Unknown method
+    return {
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "error": {"code": -32601, "message": f"Method '{method}' not found"},
+    }
+
+
+async def health_check(request):
+    """Health check endpoint for ArmorIQ dashboard and cloud probes."""
+    return JSONResponse({
+        "status": "ok",
+        "service": "mandate-mcp",
+        "protocol": "mcp-http-sse",
+        "version": SERVER_INFO["version"],
+        "exposed_tools": ["fetch_invoices"],
+        "auth_state": "READ_ONLY_ACTIVE",
+    })
+
+
+async def handle_http_mcp(request):
+    """Direct HTTP POST JSON-RPC endpoint (POST /mcp or POST /)."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(
+            {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}},
+            status_code=400,
+        )
+
+    # Handle batch or single request
+    if isinstance(body, list):
+        responses = [res for item in body if (res := handle_jsonrpc_request(item)) is not None]
+        return JSONResponse(responses)
+    else:
+        res = handle_jsonrpc_request(body)
+        if res is None:
+            return Response(status_code=204)
+        return JSONResponse(res)
+
+
+async def sse_endpoint(request):
+    """SSE connection endpoint (GET /sse)."""
+    session_id = str(uuid.uuid4())
+    queue: asyncio.Queue = asyncio.Queue()
+    active_sessions[session_id] = queue
+
+    logger.info("New SSE MCP connection established: session_id=%s", session_id)
+
+    async def event_generator():
+        # 1. Send initial endpoint registration event
+        yield f"event: endpoint\ndata: /messages?session_id={session_id}\n\n"
+
+        try:
+            while True:
+                try:
+                    # Wait for message with 15s heartbeat keepalive
+                    data = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    yield f"event: message\ndata: {json.dumps(data)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            active_sessions.pop(session_id, None)
+            logger.info("SSE connection closed: session_id=%s", session_id)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+async def sse_messages(request):
+    """Message ingestion for active SSE session (POST /messages)."""
+    session_id = request.query_params.get("session_id")
+    if not session_id or session_id not in active_sessions:
+        return JSONResponse({"error": "Invalid or missing session_id"}, status_code=400)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    res = handle_jsonrpc_request(body)
+    if res is not None:
+        await active_sessions[session_id].put(res)
+
+    return JSONResponse({"status": "accepted"}, status_code=202)
+
+
+routes = [
+    Route("/health", health_check, methods=["GET"]),
+    Route("/", health_check, methods=["GET"]),
+    Route("/mcp", handle_http_mcp, methods=["POST"]),
+    Route("/", handle_http_mcp, methods=["POST"]),
+    Route("/sse", sse_endpoint, methods=["GET"]),
+    Route("/messages", sse_messages, methods=["POST"]),
+]
+
+middleware = [
+    Middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+]
+
+app = Starlette(debug=True, routes=routes, middleware=middleware)
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("MCP_PORT", 8010))
+    print(f"Starting Mandate Remote MCP HTTP/SSE server on port {port}...")
+    uvicorn.run(app, host="0.0.0.0", port=port)
