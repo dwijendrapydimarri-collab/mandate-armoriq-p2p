@@ -29,8 +29,10 @@ def test_real_armoriq_fails_closed_without_api_key():
 
 def test_real_armoriq_adapter_mapping_with_mock_client():
     """Verify the 5-method protocol mapping against the ArmorIQClient."""
-    real_adapter = RealArmorIQ(api_key="ak_test_mock_for_unit_test")
+    real_adapter = RealArmorIQ(api_key="ak_test_dummy_unit_test_mock_key")
     assert real_adapter.client is not None
+
+
 
     # 1. Test capture_plan
     plan_res = real_adapter.capture_plan(

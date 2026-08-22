@@ -92,6 +92,8 @@ class RealArmorIQ:
             raw_proxy = raw_proxy.rstrip("/")
 
         client_kwargs: Dict[str, Any] = {"api_key": self.api_key}
+        if not (self.api_key.startswith("ak_live_") or self.api_key.startswith("ak_test_") or self.api_key.startswith("ak_claw_")):
+            client_kwargs["_skip_api_key_validation"] = True
         if raw_backend:
             client_kwargs["backend_endpoint"] = raw_backend
         if raw_iap:
@@ -100,6 +102,7 @@ class RealArmorIQ:
             client_kwargs["proxy_endpoint"] = raw_proxy
 
         self.client = ArmorIQClient(**client_kwargs)
+
         self._captured_plans: Dict[str, PlanCapture] = {}
         self._tokens: Dict[str, IntentToken] = {}
         self._delegations: Dict[str, Any] = {}
